@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RPG Editor</title>
+  <link rel="stylesheet" href="editor.css">
+</head>
+<body>
+<main class="editor-app">
+  <header class="topbar">
+    <a class="back-link" href="../">Voltar</a>
+    <button id="newFileBtn" type="button">Novo arquivo</button>
+    <button id="loadFileBtn" type="button">Carregar arquivo</button>
+    <button id="saveFileBtn" type="button">Salvar arquivo</button>
+    <button id="previewBtn" type="button">Preview: OFF</button>
+    <input id="fileInput" type="file" accept="application/json" hidden>
+    <p id="statusLine" class="status" data-type="info">Inicializando editor...</p>
+  </header>
+
+  <section class="workspace">
+    <aside class="sidebar">
+      <article class="panel">
+        <h2>Keybinds</h2>
+        <ul class="keybinds">
+          <li><code>M</code>: abre/fecha seletor de tile</li>
+          <li><code>Q / E</code>: tile anterior/proximo</li>
+          <li><code>P</code>: alterna preview</li>
+          <li><code>WASD / Setas</code>: mover no preview</li>
+          <li><code>Clique Esq.</code>: pintar tile</li>
+          <li><code>Clique Dir.</code>: pintar void padrao (Tile #311)</li>
+          <li><code>Shift + clique</code>: marcar/remover colisao</li>
+          <li><code>Ctrl + clique</code>: definir spawn</li>
+          <li><code>Botao do meio + arrastar</code>: mover camera (edicao)</li>
+        </ul>
+      </article>
+
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Seletor de Tile</h2>
+          <button id="toggleSelectorBtn" type="button">M</button>
+        </div>
+        <div id="selectorPanel" class="selector-panel">
+          <label class="field">
+            Regiao
+            <select id="regionFilter">
+              <option value="all">Todas</option>
+              <option value="tilesets">Tilesets</option>
+              <option value="autotiles">Autotiles</option>
+            </select>
+          </label>
+          <label class="field">
+            Arquivo
+            <select id="fileFilter"></select>
+          </label>
+          <p id="selectedTileLabel" class="selected-label">Tile selecionado: nenhum</p>
+          <div class="palette-shell">
+            <canvas id="tilePaletteCanvas" width="320" height="240"></canvas>
+          </div>
+        </div>
+      </article>
+    </aside>
+
+    <section class="canvas-wrap">
+      <canvas id="editorCanvas" width="960" height="540"></canvas>
+    </section>
+  </section>
+</main>
+
+<script type="module" src="editor.js"></script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RPG Jogo</title>
+  <link rel="stylesheet" href="game.css">
+</head>
+<body>
+<main class="game-app">
+  <header class="topbar">
+    <a class="back-link" href="../">Voltar</a>
+    <button id="loadMapBtn" type="button">Carregar Mapa</button>
+    <button id="clearMapBtn" type="button">Remover Mapa</button>
+    <input id="mapFileInput" type="file" accept="application/json" hidden>
+    <p id="statusLine" class="status" data-type="info">Inicializando...</p>
+  </header>
+
+  <section class="canvas-shell">
+    <canvas id="gameCanvas" width="960" height="540"></canvas>
+  </section>
+</main>
+
+<script type="module" src="game.js"></script>
+</body>
+</html>
