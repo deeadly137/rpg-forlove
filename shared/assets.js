@@ -101,6 +101,7 @@ export class AssetStore {
         const id = offset + localIndex;
         const sx = (localIndex % columns) * TILE_SIZE;
         const sy = Math.floor(localIndex / columns) * TILE_SIZE;
+
         const tile = {
           id,
           sheetId,
@@ -131,23 +132,31 @@ export class AssetStore {
     if (!meta) {
       return;
     }
+
+    // Small source inset avoids atlas bleeding lines without creating per-tile canvases.
+    const inset = 0.01;
     const sheet = this.sheets[meta.sheetId];
-    ctx.drawImage(sheet.image, meta.sx, meta.sy, TILE_SIZE, TILE_SIZE, dx, dy, size, size);
+    ctx.drawImage(
+      sheet.image,
+      meta.sx + inset,
+      meta.sy + inset,
+      TILE_SIZE - inset * 2,
+      TILE_SIZE - inset * 2,
+      dx,
+      dy,
+      size,
+      size
+    );
   }
 
   getTileIds(filter = {}) {
     const regionFilter = String(filter.region || "all").toLowerCase();
     const fileFilter = String(filter.file || "all");
     return this.tiles
-      .filter((tile) => {
-        if (regionFilter !== "all" && tile.region !== regionFilter) {
-          return false;
-        }
-        if (fileFilter !== "all" && tile.fileName !== fileFilter) {
-          return false;
-        }
-        return true;
-      })
+      .filter((tile) =>
+        (regionFilter === "all" || tile.region === regionFilter)
+        && (fileFilter === "all" || tile.fileName === fileFilter)
+      )
       .map((tile) => tile.id);
   }
 

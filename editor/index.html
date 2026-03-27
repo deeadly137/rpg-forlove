@@ -20,19 +20,50 @@
 
   <section class="workspace">
     <aside class="sidebar">
-      <article class="panel">
-        <h2>Keybinds</h2>
-        <ul class="keybinds">
-          <li><code>M</code>: abre/fecha seletor de tile</li>
-          <li><code>Q / E</code>: tile anterior/proximo</li>
-          <li><code>P</code>: alterna preview</li>
-          <li><code>WASD / Setas</code>: mover no preview</li>
-          <li><code>Clique Esq.</code>: pintar tile</li>
-          <li><code>Clique Dir.</code>: pintar void padrao (Tile #311)</li>
-          <li><code>Shift + clique</code>: marcar/remover colisao</li>
-          <li><code>Ctrl + clique</code>: definir spawn</li>
-          <li><code>Botao do meio + arrastar</code>: mover camera (edicao)</li>
-        </ul>
+      <article class="panel tools-panel">
+        <div class="panel-head">
+          <h2>Ferramentas</h2>
+        </div>
+        <div class="tool-grid" role="toolbar" aria-label="Ferramentas de edicao">
+          <button id="toolPaintBtn" class="tool-btn is-active" type="button" data-tool="paint" title="Paint (atalho: 1)">
+            &#9998;
+          </button>
+          <button id="toolCollisionBtn" class="tool-btn" type="button" data-tool="collision" title="Collision (atalho: 2)">
+            &#10006;
+          </button>
+          <button id="toolVoidBtn" class="tool-btn" type="button" data-tool="void" title="Void (atalho: 3)">
+            &#9632;
+          </button>
+        </div>
+        <div class="layer-box">
+          <p class="void-label">Layer ativa</p>
+          <div class="layer-grid" role="toolbar" aria-label="Camadas de pintura">
+            <button id="layerTopBtn" class="layer-btn" type="button" data-layer="top" title="#3 - Top Layer (atalho: 7)">#3</button>
+            <button id="layerMiddleBtn" class="layer-btn" type="button" data-layer="middle" title="#2 - Middle Layer (atalho: 8)">#2</button>
+            <button id="layerBottomBtn" class="layer-btn is-active" type="button" data-layer="bottom" title="#1 - Bottom Layer (atalho: 9)">#1</button>
+          </div>
+        </div>
+        <div class="void-box">
+          <p class="void-label">Void default tile</p>
+          <button id="voidPickerBtn" class="void-picker" type="button" title="Selecionar tile void">
+            <canvas id="voidPreviewCanvas" width="32" height="32"></canvas>
+            <span id="voidPickerLabel">Tile #-1</span>
+          </button>
+        </div>
+        <div class="map-size-box">
+          <p class="void-label">Dimensoes do mapa</p>
+          <div class="map-size-row">
+            <label class="size-field">
+              W
+              <input id="mapWidthInput" type="number" min="8" max="300" step="1" value="40">
+            </label>
+            <label class="size-field">
+              H
+              <input id="mapHeightInput" type="number" min="8" max="300" step="1" value="26">
+            </label>
+            <button id="applyMapSizeBtn" type="button" title="Aplicar dimensoes em tempo real">Aplicar</button>
+          </div>
+        </div>
       </article>
 
       <article class="panel">
@@ -66,6 +97,20 @@
     </section>
   </section>
 </main>
+
+<div id="voidModal" class="modal is-hidden" aria-hidden="true">
+  <div class="modal-backdrop" data-close="void-modal"></div>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="voidModalTitle">
+    <div class="modal-head">
+      <h3 id="voidModalTitle">Selecionar Void Default Tile</h3>
+      <button id="voidModalCloseBtn" class="modal-close" type="button" title="Fechar">X</button>
+    </div>
+    <p class="modal-help">Void padrao inicia em #-1. Selecione #0 para transparente.</p>
+    <div class="modal-palette-shell">
+      <canvas id="voidModalCanvas" width="320" height="240"></canvas>
+    </div>
+  </div>
+</div>
 
 <script type="module" src="editor.js"></script>
 </body>

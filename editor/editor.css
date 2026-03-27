@@ -61,7 +61,7 @@ button {
 
 .workspace {
   display: grid;
-  grid-template-columns: 350px minmax(0, 1fr);
+  grid-template-columns: 250px minmax(0, 1fr);
   gap: 10px;
 }
 
@@ -83,6 +83,10 @@ button {
   font-size: 1rem;
 }
 
+.tools-panel {
+  padding: 8px;
+}
+
 .panel-head {
   display: flex;
   align-items: center;
@@ -101,11 +105,107 @@ button {
   margin-bottom: 8px;
 }
 
-.keybinds {
-  margin: 0;
-  padding-left: 18px;
+.tool-grid {
   display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.tool-btn {
+  min-height: 34px;
+  padding: 0;
+  font-size: 1rem;
+  font-weight: bold;
+}
+
+.tool-btn.is-active {
+  border-color: #7dff7d;
+  color: #d8ffd8;
+  background: #143114;
+}
+
+.void-box {
+  margin-top: 8px;
+}
+
+.map-size-box {
+  margin-top: 8px;
+}
+
+.map-size-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.size-field {
+  display: flex;
+  flex-direction: column;
   gap: 4px;
+  font-size: 0.75rem;
+  color: #d5d5d5;
+}
+
+.size-field input {
+  width: 58px;
+  padding: 5px 6px;
+  border: 1px solid #575757;
+  background: #171717;
+  color: #efefef;
+  border-radius: 6px;
+  font: inherit;
+}
+
+#applyMapSizeBtn {
+  min-height: 31px;
+  padding: 4px 8px;
+}
+
+.layer-box {
+  margin-top: 8px;
+}
+
+.layer-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.layer-btn {
+  min-height: 30px;
+  padding: 0;
+  font-size: 0.85rem;
+  font-weight: bold;
+}
+
+.layer-btn.is-active {
+  border-color: #6ea0ff;
+  color: #e0ebff;
+  background: #172742;
+}
+
+.void-label {
+  margin: 0 0 6px;
+  font-size: 0.85rem;
+  color: #c9c9c9;
+}
+
+.void-picker {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-start;
+  padding: 6px 8px;
+}
+
+#voidPreviewCanvas {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #060606;
+  image-rendering: pixelated;
 }
 
 .selected-label {
@@ -129,18 +229,95 @@ button {
 }
 
 .canvas-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 auto;
   border: 1px solid #4e4e4e;
   border-radius: 12px;
-  overflow: hidden;
+  overflow: auto;
 }
 
 #editorCanvas {
   display: block;
-  width: 100%;
-  height: auto;
+  width: 960px;
+  height: 540px;
+  flex: 0 0 auto;
   background: #0b0b0b;
   image-rendering: pixelated;
   cursor: crosshair;
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.modal.is-hidden {
+  display: none;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.modal-card {
+  position: relative;
+  width: min(640px, 92vw);
+  max-height: 82vh;
+  border: 1px solid #4d4d4d;
+  border-radius: 12px;
+  background: #111;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.modal-head h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.modal-close {
+  min-width: 34px;
+  min-height: 30px;
+  padding: 0;
+}
+
+.modal-help {
+  margin: 0;
+  color: #cdcdcd;
+  font-size: 0.85rem;
+}
+
+.modal-palette-shell {
+  border: 1px solid #4a4a4a;
+  border-radius: 8px;
+  max-height: 60vh;
+  overflow: auto;
+  background: #0d0d0d;
+}
+
+#voidModalCanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  image-rendering: pixelated;
 }
 
 @media (max-width: 1160px) {

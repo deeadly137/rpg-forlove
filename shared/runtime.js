@@ -1,5 +1,12 @@
 import { TILE_SIZE } from "./assets.js";
-import { INDOOR_VOID_TILE_ID, createEmptyMap, toIndex, VOID_TILE_ID } from "./map-format.js";
+import {
+  EMPTY_LAYER_TILE_ID,
+  VOID_COPY_TILE_ID,
+  VOID_STANDARD_TILE_ID,
+  createEmptyMap,
+  toIndex,
+  VOID_TILE_ID
+} from "./map-format.js";
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -51,15 +58,113 @@ export class WorldRuntime {
     this.clampCamera();
   }
 
-  sanitizeMapTiles() {
-    for (let i = 0; i < this.map.tiles.length; i += 1) {
-      const tileId = this.map.tiles[i];
-      if (tileId === INDOOR_VOID_TILE_ID) {
+  getFallbackVoidTileId() {
+    if (this.assets.getTileMeta(VOID_TILE_ID)) {
+      return VOID_TILE_ID;
+    }
+    for (const tile of this.assets.tiles) {
+      if (Number.isInteger(tile.id) && tile.id > 0) {
+        return tile.id;
+      }
+    }
+    return VOID_TILE_ID;
+  }
+
+  sanitizeConfiguredVoidTileId(value) {
+    const parsed = Number.parseInt(String(value), 10);
+    if (parsed === VOID_STANDARD_TILE_ID || parsed === VOID_COPY_TILE_ID) {
+      return parsed;
+    }
+    if (Number.isInteger(parsed) && parsed > 0 && this.assets.getTileMeta(parsed)) {
+      return parsed;
+    }
+    return VOID_COPY_TILE_ID;
+  }
+
+  resolveConfiguredVoidTileId(configuredVoidTileId = this.map.voidTileId) {
+    if (configuredVoidTileId === VOID_STANDARD_TILE_ID) {
+      return null;
+    }
+    if (configuredVoidTileId === VOID_COPY_TILE_ID) {
+      return this.getFallbackVoidTileId();
+    }
+    if (Number.isInteger(configuredVoidTileId) && configuredVoidTileId > 0 && this.assets.getTileMeta(configuredVoidTileId)) {
+      return configuredVoidTileId;
+    }
+    return this.getFallbackVoidTileId();
+  }
+
+  normalizeLayerArray(source, total, defaultTile) {
+    const normalized = new Array(total).fill(defaultTile);
+    if (!Array.isArray(source)) {
+      return normalized;
+    }
+
+    for (let i = 0; i < total; i += 1) {
+      const parsed = Number.parseInt(String(source[i]), 10);
+      if (!Number.isInteger(parsed)) {
+        normalized[i] = defaultTile;
         continue;
       }
-      if (!Number.isInteger(tileId) || !this.assets.getTileMeta(tileId)) {
-        this.map.tiles[i] = VOID_TILE_ID;
+      if (parsed === VOID_STANDARD_TILE_ID || parsed === VOID_COPY_TILE_ID || parsed === EMPTY_LAYER_TILE_ID) {
+        normalized[i] = parsed;
+        continue;
       }
+      if (parsed >= 0 && this.assets.getTileMeta(parsed)) {
+        normalized[i] = parsed;
+        continue;
+      }
+      normalized[i] = defaultTile;
+    }
+    return normalized;
+  }
+
+  getLayerArrays() {
+    const total = this.map.width * this.map.height;
+    const rawLayers = this.map.layers && typeof this.map.layers === "object" ? this.map.layers : {};
+    const rawBottom = Array.isArray(rawLayers.bottom)
+      ? rawLayers.bottom
+      : (Array.isArray(this.map.tiles) ? this.map.tiles : []);
+    const rawMiddle = Array.isArray(rawLayers.middle) ? rawLayers.middle : [];
+    const rawTop = Array.isArray(rawLayers.top) ? rawLayers.top : [];
+
+    const bottom = this.normalizeLayerArray(rawBottom, total, VOID_STANDARD_TILE_ID);
+    const middle = this.normalizeLayerArray(rawMiddle, total, EMPTY_LAYER_TILE_ID);
+    const top = this.normalizeLayerArray(rawTop, total, EMPTY_LAYER_TILE_ID);
+    return { bottom, middle, top };
+  }
+
+  resolveRenderableTileId(rawTileId) {
+    if (rawTileId === EMPTY_LAYER_TILE_ID || rawTileId === VOID_STANDARD_TILE_ID) {
+      return null;
+    }
+    if (rawTileId === VOID_COPY_TILE_ID) {
+      return this.resolveConfiguredVoidTileId(this.map.voidTileId);
+    }
+    if (Number.isInteger(rawTileId) && rawTileId >= 0 && this.assets.getTileMeta(rawTileId)) {
+      return rawTileId;
+    }
+    return null;
+  }
+
+  sanitizeMapTiles() {
+    const total = this.map.width * this.map.height;
+    this.map.voidTileId = this.sanitizeConfiguredVoidTileId(this.map.voidTileId);
+
+    const layers = this.getLayerArrays();
+    this.map.layers = layers;
+    this.map.tiles = layers.bottom;
+
+    if (!Array.isArray(this.map.collision) || this.map.collision.length !== total) {
+      this.map.collision = new Array(total).fill(0);
+    } else {
+      for (let i = 0; i < total; i += 1) {
+        this.map.collision[i] = this.map.collision[i] ? 1 : 0;
+      }
+    }
+
+    if (!this.map.spawn || typeof this.map.spawn !== "object") {
+      this.map.spawn = { x: 1, y: 1 };
     }
   }
 
@@ -284,28 +389,47 @@ export class WorldRuntime {
     };
   }
 
-  drawGridLines(viewportWidth, viewportHeight) {
-    const startX = Math.floor(this.camera.x / TILE_SIZE) * TILE_SIZE;
-    const startY = Math.floor(this.camera.y / TILE_SIZE) * TILE_SIZE;
-    const endX = this.camera.x + viewportWidth + TILE_SIZE;
-    const endY = this.camera.y + viewportHeight + TILE_SIZE;
+  drawGridLines(viewportWidth, viewportHeight, cameraX = this.camera.x, cameraY = this.camera.y) {
+    const startX = Math.floor(cameraX / TILE_SIZE) * TILE_SIZE;
+    const startY = Math.floor(cameraY / TILE_SIZE) * TILE_SIZE;
+    const endX = cameraX + viewportWidth + TILE_SIZE;
+    const endY = cameraY + viewportHeight + TILE_SIZE;
 
     this.ctx.save();
     this.ctx.strokeStyle = "rgba(0, 0, 0, 0.2)";
     this.ctx.lineWidth = 1;
     this.ctx.beginPath();
     for (let worldX = startX; worldX <= endX; worldX += TILE_SIZE) {
-      const screenX = Math.floor(worldX - this.camera.x) + 0.5;
+      const screenX = Math.floor(worldX - cameraX) + 0.5;
       this.ctx.moveTo(screenX, 0);
       this.ctx.lineTo(screenX, viewportHeight);
     }
     for (let worldY = startY; worldY <= endY; worldY += TILE_SIZE) {
-      const screenY = Math.floor(worldY - this.camera.y) + 0.5;
+      const screenY = Math.floor(worldY - cameraY) + 0.5;
       this.ctx.moveTo(0, screenY);
       this.ctx.lineTo(viewportWidth, screenY);
     }
     this.ctx.stroke();
     this.ctx.restore();
+  }
+
+  drawLayerRange(layerTiles, fromX, toX, fromY, toY, snapX, snapY) {
+    for (let y = fromY; y <= toY; y += 1) {
+      for (let x = fromX; x <= toX; x += 1) {
+        const rawTileId = layerTiles[toIndex(x, y, this.map.width)];
+        const tileId = this.resolveRenderableTileId(rawTileId);
+        if (tileId === null) {
+          continue;
+        }
+        this.assets.drawTile(
+          this.ctx,
+          tileId,
+          Math.floor(x * TILE_SIZE - snapX),
+          Math.floor(y * TILE_SIZE - snapY),
+          TILE_SIZE
+        );
+      }
+    }
   }
 
   render(options = {}) {
@@ -324,6 +448,8 @@ export class WorldRuntime {
     const viewport = this.getViewportSize();
     const viewportWidth = viewport.width;
     const viewportHeight = viewport.height;
+    const snapX = Math.round(this.camera.x * this.zoom) / this.zoom;
+    const snapY = Math.round(this.camera.y * this.zoom) / this.zoom;
 
     this.ctx.imageSmoothingEnabled = false;
     this.ctx.fillStyle = backgroundColor;
@@ -334,63 +460,24 @@ export class WorldRuntime {
       this.ctx.scale(this.zoom, this.zoom);
     }
 
-    const fromX = Math.max(0, Math.floor(this.camera.x / TILE_SIZE) - 1);
-    const toX = Math.min(this.map.width - 1, Math.ceil((this.camera.x + viewportWidth) / TILE_SIZE) + 1);
-    const fromY = Math.max(0, Math.floor(this.camera.y / TILE_SIZE) - 1);
-    const toY = Math.min(this.map.height - 1, Math.ceil((this.camera.y + viewportHeight) / TILE_SIZE) + 1);
+    const fromX = Math.max(0, Math.floor(snapX / TILE_SIZE) - 1);
+    const toX = Math.min(this.map.width - 1, Math.ceil((snapX + viewportWidth) / TILE_SIZE) + 1);
+    const fromY = Math.max(0, Math.floor(snapY / TILE_SIZE) - 1);
+    const toY = Math.min(this.map.height - 1, Math.ceil((snapY + viewportHeight) / TILE_SIZE) + 1);
+    const bottomLayer = this.map.layers?.bottom || this.map.tiles;
+    const middleLayer = this.map.layers?.middle || [];
+    const topLayer = this.map.layers?.top || [];
 
-    for (let y = fromY; y <= toY; y += 1) {
-      for (let x = fromX; x <= toX; x += 1) {
-        const tileId = this.map.tiles[toIndex(x, y, this.map.width)];
-        if (tileId >= 0) {
-          this.assets.drawTile(
-            this.ctx,
-            tileId,
-            Math.floor(x * TILE_SIZE - this.camera.x),
-            Math.floor(y * TILE_SIZE - this.camera.y),
-            TILE_SIZE
-          );
-        }
-      }
-    }
-
-    if (showCollisionOverlay) {
-      this.ctx.fillStyle = "rgba(198, 40, 40, 0.3)";
-      for (let y = fromY; y <= toY; y += 1) {
-        for (let x = fromX; x <= toX; x += 1) {
-          const index = toIndex(x, y, this.map.width);
-          if (this.map.collision[index] === 1) {
-            this.ctx.fillRect(
-              Math.floor(x * TILE_SIZE - this.camera.x),
-              Math.floor(y * TILE_SIZE - this.camera.y),
-              TILE_SIZE,
-              TILE_SIZE
-            );
-          }
-        }
-      }
-    }
-
-    if (showSpawnMarker) {
-      const spawnScreenX = Math.floor(this.map.spawn.x * TILE_SIZE + TILE_SIZE / 2 - this.camera.x);
-      const spawnScreenY = Math.floor(this.map.spawn.y * TILE_SIZE + TILE_SIZE / 2 - this.camera.y);
-      this.ctx.save();
-      this.ctx.strokeStyle = "#ffeb3b";
-      this.ctx.fillStyle = "rgba(255, 235, 59, 0.35)";
-      this.ctx.beginPath();
-      this.ctx.arc(spawnScreenX, spawnScreenY, 8, 0, Math.PI * 2);
-      this.ctx.fill();
-      this.ctx.stroke();
-      this.ctx.restore();
-    }
+    this.drawLayerRange(bottomLayer, fromX, toX, fromY, toY, snapX, snapY);
+    this.drawLayerRange(middleLayer, fromX, toX, fromY, toY, snapX, snapY);
 
     if (showPlayer && showPlayerShadow) {
       this.ctx.save();
       this.ctx.fillStyle = "rgba(0,0,0,0.2)";
       this.ctx.beginPath();
       this.ctx.ellipse(
-        Math.floor(this.player.x - this.camera.x),
-        Math.floor(this.player.y - this.camera.y - 1),
+        Math.floor(this.player.x - snapX),
+        Math.floor(this.player.y - snapY - 1),
         8,
         4,
         0,
@@ -407,16 +494,48 @@ export class WorldRuntime {
       const drawWidth = TILE_SIZE;
       const scale = drawWidth / Math.max(1, srcWidth);
       const drawHeight = Math.max(1, Math.round(srcHeight * scale));
-      const drawX = Math.floor(this.player.x - this.camera.x - drawWidth / 2);
-      const drawY = Math.floor(this.player.y - this.camera.y - drawHeight);
+      const drawX = Math.floor(this.player.x - snapX - drawWidth / 2);
+      const drawY = Math.floor(this.player.y - snapY - drawHeight);
       this.ctx.save();
       this.ctx.globalAlpha = clamp(playerAlpha, 0, 1);
       this.ctx.drawImage(this.assets.playerImage, drawX, drawY, drawWidth, drawHeight);
       this.ctx.restore();
     }
 
+    this.drawLayerRange(topLayer, fromX, toX, fromY, toY, snapX, snapY);
+
+    if (showCollisionOverlay) {
+      this.ctx.fillStyle = "rgba(198, 40, 40, 0.3)";
+      for (let y = fromY; y <= toY; y += 1) {
+        for (let x = fromX; x <= toX; x += 1) {
+          const index = toIndex(x, y, this.map.width);
+          if (this.map.collision[index] === 1) {
+            this.ctx.fillRect(
+              Math.floor(x * TILE_SIZE - snapX),
+              Math.floor(y * TILE_SIZE - snapY),
+              TILE_SIZE,
+              TILE_SIZE
+            );
+          }
+        }
+      }
+    }
+
+    if (showSpawnMarker) {
+      const spawnScreenX = Math.floor(this.map.spawn.x * TILE_SIZE + TILE_SIZE / 2 - snapX);
+      const spawnScreenY = Math.floor(this.map.spawn.y * TILE_SIZE + TILE_SIZE / 2 - snapY);
+      this.ctx.save();
+      this.ctx.strokeStyle = "#ffeb3b";
+      this.ctx.fillStyle = "rgba(255, 235, 59, 0.35)";
+      this.ctx.beginPath();
+      this.ctx.arc(spawnScreenX, spawnScreenY, 8, 0, Math.PI * 2);
+      this.ctx.fill();
+      this.ctx.stroke();
+      this.ctx.restore();
+    }
+
     if (showGrid) {
-      this.drawGridLines(viewportWidth, viewportHeight);
+      this.drawGridLines(viewportWidth, viewportHeight, snapX, snapY);
     }
 
     this.ctx.restore();

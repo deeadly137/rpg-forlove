@@ -189,7 +189,7 @@ async function init() {
       showSpawnMarker: false,
       showGrid: false
     });
-    state.runtime.setCameraTuning({ lookahead: 26, lerp: 0.18 });
+    state.runtime.setCameraTuning({ lookahead: 0, lerp: 1 });
     setVoidMapState();
     render();
     requestAnimationFrame(tick);

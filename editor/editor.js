@@ -1,9 +1,15 @@
 import { AssetStore, TILE_SIZE, fileNameFromAssetPath } from "../shared/assets.js";
 import { WorldRuntime } from "../shared/runtime.js";
 import {
-  INDOOR_VOID_TILE_ID,
+  EMPTY_LAYER_TILE_ID,
+  LAYER_BOTTOM,
+  LAYER_MIDDLE,
+  LAYER_TOP,
+  VOID_COPY_TILE_ID,
+  VOID_STANDARD_TILE_ID,
   VOID_TILE_ID,
-  createEmptyMap,
+  createMap,
+  getMapLayer,
   normalizeMap,
   serializeMap,
   toIndex
@@ -11,6 +17,9 @@ import {
 
 const PALETTE_CELL_SIZE = 40;
 const PALETTE_COLUMNS = 8;
+const EDITOR_DEFAULT_VOID_TILE_ID = VOID_COPY_TILE_ID;
+const MIN_MAP_SIZE = 8;
+const MAX_MAP_SIZE = 300;
 
 const DIRECTION_KEYS = {
   a: "left",
@@ -31,6 +40,20 @@ const dom = {
   fileInput: document.getElementById("fileInput"),
   statusLine: document.getElementById("statusLine"),
 
+  toolPaintBtn: document.getElementById("toolPaintBtn"),
+  toolCollisionBtn: document.getElementById("toolCollisionBtn"),
+  toolVoidBtn: document.getElementById("toolVoidBtn"),
+  layerTopBtn: document.getElementById("layerTopBtn"),
+  layerMiddleBtn: document.getElementById("layerMiddleBtn"),
+  layerBottomBtn: document.getElementById("layerBottomBtn"),
+
+  voidPickerBtn: document.getElementById("voidPickerBtn"),
+  voidPickerLabel: document.getElementById("voidPickerLabel"),
+  voidPreviewCanvas: document.getElementById("voidPreviewCanvas"),
+  mapWidthInput: document.getElementById("mapWidthInput"),
+  mapHeightInput: document.getElementById("mapHeightInput"),
+  applyMapSizeBtn: document.getElementById("applyMapSizeBtn"),
+
   toggleSelectorBtn: document.getElementById("toggleSelectorBtn"),
   selectorPanel: document.getElementById("selectorPanel"),
   regionFilter: document.getElementById("regionFilter"),
@@ -38,24 +61,45 @@ const dom = {
   selectedTileLabel: document.getElementById("selectedTileLabel"),
   tilePaletteCanvas: document.getElementById("tilePaletteCanvas"),
 
-  editorCanvas: document.getElementById("editorCanvas")
+  editorCanvas: document.getElementById("editorCanvas"),
+
+  voidModal: document.getElementById("voidModal"),
+  voidModalCloseBtn: document.getElementById("voidModalCloseBtn"),
+  voidModalCanvas: document.getElementById("voidModalCanvas")
 };
 
 const paletteCtx = dom.tilePaletteCanvas.getContext("2d");
+const voidPreviewCtx = dom.voidPreviewCanvas ? dom.voidPreviewCanvas.getContext("2d") : null;
+const voidModalCtx = dom.voidModalCanvas ? dom.voidModalCanvas.getContext("2d") : null;
+
+function createEditorDefaultMap(width = 40, height = 26) {
+  return createMap(width, height, {
+    defaultTile: VOID_COPY_TILE_ID,
+    voidTileId: EDITOR_DEFAULT_VOID_TILE_ID,
+    defaultCollision: 0
+  });
+}
 
 const state = {
   assets: new AssetStore(),
   runtime: null,
-  map: createEmptyMap(40, 26),
+  map: createEditorDefaultMap(40, 26),
   mapFileName: "novo-mapa.json",
   dirty: false,
 
   previewMode: false,
   selectorOpen: true,
+  activeTool: "paint",
+  activeLayer: LAYER_BOTTOM,
 
   selectedTileId: null,
   filteredTileIds: [],
   hoveredPaletteTileId: null,
+  voidModal: {
+    open: false,
+    hoveredTileId: null,
+    tileIds: []
+  },
 
   keys: new Set(),
   pointer: {
@@ -72,6 +116,93 @@ const state = {
 function setStatus(message, type = "info") {
   dom.statusLine.textContent = message;
   dom.statusLine.dataset.type = type;
+}
+
+function clampInt(value, min, max, fallback) {
+  const parsed = Number.parseInt(String(value), 10);
+  const normalized = Number.isFinite(parsed) ? parsed : fallback;
+  return Math.max(min, Math.min(max, normalized));
+}
+
+function getRequestedMapSize(fallbackWidth = 40, fallbackHeight = 26) {
+  const width = clampInt(dom.mapWidthInput?.value, MIN_MAP_SIZE, MAX_MAP_SIZE, fallbackWidth);
+  const height = clampInt(dom.mapHeightInput?.value, MIN_MAP_SIZE, MAX_MAP_SIZE, fallbackHeight);
+  return { width, height };
+}
+
+function syncMapSizeInputs() {
+  if (!state.map) {
+    return;
+  }
+  if (dom.mapWidthInput) {
+    dom.mapWidthInput.value = String(state.map.width);
+  }
+  if (dom.mapHeightInput) {
+    dom.mapHeightInput.value = String(state.map.height);
+  }
+}
+
+function resizeCurrentMap(nextWidth, nextHeight) {
+  const width = clampInt(nextWidth, MIN_MAP_SIZE, MAX_MAP_SIZE, state.map.width);
+  const height = clampInt(nextHeight, MIN_MAP_SIZE, MAX_MAP_SIZE, state.map.height);
+  if (width === state.map.width && height === state.map.height) {
+    syncMapSizeInputs();
+    return false;
+  }
+
+  ensureMapLayers();
+  const sourceMap = state.map;
+  const configuredVoidTileId = getCurrentVoidTileId();
+  const resizedMap = createMap(width, height, {
+    defaultTile: configuredVoidTileId,
+    voidTileId: configuredVoidTileId,
+    defaultCollision: 0
+  });
+
+  const copyWidth = Math.min(sourceMap.width, width);
+  const copyHeight = Math.min(sourceMap.height, height);
+  for (let y = 0; y < copyHeight; y += 1) {
+    for (let x = 0; x < copyWidth; x += 1) {
+      const sourceIndex = toIndex(x, y, sourceMap.width);
+      const targetIndex = toIndex(x, y, width);
+      resizedMap.layers.bottom[targetIndex] = sourceMap.layers.bottom[sourceIndex];
+      resizedMap.layers.middle[targetIndex] = sourceMap.layers.middle[sourceIndex];
+      resizedMap.layers.top[targetIndex] = sourceMap.layers.top[sourceIndex];
+      resizedMap.collision[targetIndex] = sourceMap.collision[sourceIndex] ? 1 : 0;
+    }
+  }
+
+  const rawSpawn = sourceMap.spawn || {};
+  resizedMap.spawn.x = clampInt(rawSpawn.x, 0, width - 1, 1);
+  resizedMap.spawn.y = clampInt(rawSpawn.y, 0, height - 1, 1);
+
+  state.map = resizedMap;
+  state.runtime.setMap(state.map, { sanitize: true, resetPlayer: true });
+  state.map = state.runtime.map;
+  ensureMapLayers();
+  if (state.previewMode) {
+    applyGamePreviewMode();
+  } else {
+    applyEditorMode();
+  }
+  state.pointer.lastEditedIndex = -1;
+  state.dirty = true;
+  syncMapSizeInputs();
+  setStatus(`Mapa redimensionado para ${state.map.width}x${state.map.height}.`, "ok");
+  return true;
+}
+
+function applyMapResizeFromUi() {
+  const fallbackWidth = state.map?.width || 40;
+  const fallbackHeight = state.map?.height || 26;
+  const requested = getRequestedMapSize(fallbackWidth, fallbackHeight);
+  if (!state.runtime) {
+    state.map = createEditorDefaultMap(requested.width, requested.height);
+    ensureMapLayers();
+    syncMapSizeInputs();
+    return;
+  }
+  resizeCurrentMap(requested.width, requested.height);
 }
 
 function isFormElement(target) {
@@ -93,6 +224,230 @@ function getInputState() {
     up: state.keys.has("up"),
     down: state.keys.has("down")
   };
+}
+
+function getCurrentVoidTileId() {
+  const raw = Number.parseInt(String(state.map?.voidTileId), 10);
+  if (raw === VOID_STANDARD_TILE_ID || raw === VOID_COPY_TILE_ID) {
+    return raw;
+  }
+  if (Number.isInteger(raw) && raw > 0 && state.assets.getTileMeta(raw)) {
+    return raw;
+  }
+  return EDITOR_DEFAULT_VOID_TILE_ID;
+}
+
+function getResolvedVoidTileId(configuredVoidTileId = getCurrentVoidTileId()) {
+  if (configuredVoidTileId === VOID_STANDARD_TILE_ID) {
+    return null;
+  }
+  if (configuredVoidTileId === VOID_COPY_TILE_ID) {
+    if (state.assets.getTileMeta(VOID_TILE_ID)) {
+      return VOID_TILE_ID;
+    }
+    const fallback = state.assets.tiles.find((tile) => Number.isInteger(tile.id) && tile.id > 0);
+    return fallback ? fallback.id : null;
+  }
+  if (Number.isInteger(configuredVoidTileId) && configuredVoidTileId > 0 && state.assets.getTileMeta(configuredVoidTileId)) {
+    return configuredVoidTileId;
+  }
+  if (state.assets.getTileMeta(VOID_TILE_ID)) {
+    return VOID_TILE_ID;
+  }
+  const fallback = state.assets.tiles.find((tile) => Number.isInteger(tile.id) && tile.id > 0);
+  return fallback ? fallback.id : null;
+}
+
+function setActiveTool(toolName) {
+  if (!["paint", "collision", "void"].includes(toolName)) {
+    return;
+  }
+  state.activeTool = toolName;
+  renderActiveToolButtons();
+}
+
+function renderActiveToolButtons() {
+  const buttons = [dom.toolPaintBtn, dom.toolCollisionBtn, dom.toolVoidBtn];
+  buttons.forEach((button) => {
+    if (!button) {
+      return;
+    }
+    button.classList.toggle("is-active", button.dataset.tool === state.activeTool);
+  });
+}
+
+function ensureMapLayers() {
+  if (!state.map || typeof state.map !== "object") {
+    return;
+  }
+  const total = state.map.width * state.map.height;
+  if (!state.map.layers || typeof state.map.layers !== "object") {
+    state.map.layers = {};
+  }
+
+  const fallbackBottom = Array.isArray(state.map.tiles) ? state.map.tiles : [];
+  const normalizeLayer = (source, fallback) => {
+    const layer = new Array(total).fill(fallback);
+    if (Array.isArray(source)) {
+      for (let i = 0; i < total; i += 1) {
+        const parsed = Number.parseInt(String(source[i]), 10);
+        layer[i] = Number.isInteger(parsed) ? parsed : fallback;
+      }
+    }
+    return layer;
+  };
+
+  const bottom = normalizeLayer(state.map.layers.bottom || fallbackBottom, VOID_STANDARD_TILE_ID);
+  const middle = normalizeLayer(state.map.layers.middle, EMPTY_LAYER_TILE_ID);
+  const top = normalizeLayer(state.map.layers.top, EMPTY_LAYER_TILE_ID);
+  state.map.layers = { bottom, middle, top };
+  state.map.tiles = bottom;
+}
+
+function setActiveLayer(layerName) {
+  if (![LAYER_TOP, LAYER_MIDDLE, LAYER_BOTTOM].includes(layerName)) {
+    return;
+  }
+  state.activeLayer = layerName;
+  renderActiveLayerButtons();
+}
+
+function renderActiveLayerButtons() {
+  const buttons = [dom.layerTopBtn, dom.layerMiddleBtn, dom.layerBottomBtn];
+  buttons.forEach((button) => {
+    if (!button) {
+      return;
+    }
+    button.classList.toggle("is-active", button.dataset.layer === state.activeLayer);
+  });
+}
+
+function getActiveLayerTiles() {
+  ensureMapLayers();
+  return getMapLayer(state.map, state.activeLayer) || state.map.tiles;
+}
+
+function resolveTileForPreview(tileId) {
+  if (tileId === EMPTY_LAYER_TILE_ID || tileId === VOID_STANDARD_TILE_ID) {
+    return null;
+  }
+  if (tileId === VOID_COPY_TILE_ID) {
+    return getResolvedVoidTileId(getCurrentVoidTileId());
+  }
+  if (Number.isInteger(tileId) && tileId > 0 && state.assets.getTileMeta(tileId)) {
+    return tileId;
+  }
+  return null;
+}
+
+function drawTileChip(ctx, tileId, size = TILE_SIZE, dx = 0, dy = 0) {
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(dx, dy, size, size);
+
+  const drawTileId = resolveTileForPreview(tileId);
+  if (drawTileId === null) {
+    return;
+  }
+  state.assets.drawTile(ctx, drawTileId, dx, dy, size);
+
+  if (tileId === VOID_STANDARD_TILE_ID || tileId === VOID_COPY_TILE_ID) {
+    ctx.save();
+    ctx.strokeStyle = tileId === VOID_STANDARD_TILE_ID ? "#67d9ff" : "#ffd670";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(dx + 0.5, dy + 0.5, size - 1, size - 1);
+    ctx.restore();
+  }
+}
+
+function updateVoidPickerPreview() {
+  const voidTileId = getCurrentVoidTileId();
+  if (voidPreviewCtx && dom.voidPreviewCanvas) {
+    drawTileChip(voidPreviewCtx, voidTileId, dom.voidPreviewCanvas.width);
+  }
+  if (dom.voidPickerLabel) {
+    dom.voidPickerLabel.textContent = `Tile #${voidTileId}`;
+  }
+}
+
+function refreshVoidModalTileIds() {
+  const allTileIds = state.assets.getTileIds({ region: "all", file: "all" });
+  state.voidModal.tileIds = [VOID_COPY_TILE_ID, VOID_STANDARD_TILE_ID];
+  for (const tileId of allTileIds) {
+    if (tileId <= 0) {
+      continue;
+    }
+    if (!state.voidModal.tileIds.includes(tileId)) {
+      state.voidModal.tileIds.push(tileId);
+    }
+  }
+}
+
+function drawVoidModalPalette() {
+  if (!dom.voidModalCanvas || !voidModalCtx) {
+    return;
+  }
+
+  const rows = Math.max(1, Math.ceil(state.voidModal.tileIds.length / PALETTE_COLUMNS));
+  dom.voidModalCanvas.width = PALETTE_COLUMNS * PALETTE_CELL_SIZE;
+  dom.voidModalCanvas.height = rows * PALETTE_CELL_SIZE;
+
+  voidModalCtx.imageSmoothingEnabled = false;
+  voidModalCtx.fillStyle = "#0d0d0d";
+  voidModalCtx.fillRect(0, 0, dom.voidModalCanvas.width, dom.voidModalCanvas.height);
+
+  const currentVoid = getCurrentVoidTileId();
+  for (let index = 0; index < state.voidModal.tileIds.length; index += 1) {
+    const tileId = state.voidModal.tileIds[index];
+    const x = (index % PALETTE_COLUMNS) * PALETTE_CELL_SIZE;
+    const y = Math.floor(index / PALETTE_COLUMNS) * PALETTE_CELL_SIZE;
+
+    voidModalCtx.fillStyle = "#1a1a1a";
+    voidModalCtx.fillRect(x + 1, y + 1, PALETTE_CELL_SIZE - 2, PALETTE_CELL_SIZE - 2);
+
+    drawTileChip(voidModalCtx, tileId, TILE_SIZE, x + 4, y + 4);
+
+    if (tileId === VOID_STANDARD_TILE_ID || tileId === VOID_COPY_TILE_ID) {
+      voidModalCtx.save();
+      voidModalCtx.fillStyle = "rgba(0,0,0,0.55)";
+      voidModalCtx.fillRect(x + 4, y + 24, TILE_SIZE, 12);
+      voidModalCtx.fillStyle = "#f5f5f5";
+      voidModalCtx.font = "bold 10px monospace";
+      voidModalCtx.fillText(tileId === VOID_STANDARD_TILE_ID ? "#0" : "#-1", x + 7, y + 33);
+      voidModalCtx.restore();
+    }
+
+    if (tileId === currentVoid) {
+      voidModalCtx.strokeStyle = "#7dff7d";
+      voidModalCtx.lineWidth = 2;
+      voidModalCtx.strokeRect(x + 1, y + 1, PALETTE_CELL_SIZE - 3, PALETTE_CELL_SIZE - 3);
+    } else if (tileId === state.voidModal.hoveredTileId) {
+      voidModalCtx.strokeStyle = "#ffe082";
+      voidModalCtx.lineWidth = 2;
+      voidModalCtx.strokeRect(x + 1, y + 1, PALETTE_CELL_SIZE - 3, PALETTE_CELL_SIZE - 3);
+    }
+  }
+}
+
+function openVoidModal() {
+  if (!dom.voidModal) {
+    return;
+  }
+  refreshVoidModalTileIds();
+  state.voidModal.open = true;
+  state.voidModal.hoveredTileId = null;
+  dom.voidModal.classList.remove("is-hidden");
+  dom.voidModal.setAttribute("aria-hidden", "false");
+  drawVoidModalPalette();
+}
+
+function closeVoidModal() {
+  if (!dom.voidModal) {
+    return;
+  }
+  state.voidModal.open = false;
+  state.voidModal.hoveredTileId = null;
+  dom.voidModal.classList.add("is-hidden");
+  dom.voidModal.setAttribute("aria-hidden", "true");
 }
 
 function getCanvasPixelPosition(event, canvas) {
@@ -123,7 +478,7 @@ function applyGamePreviewMode() {
   state.runtime.setZoom(1.75);
   state.runtime.setMovementEnabled(true);
   state.runtime.setFollowPlayer(true, true);
-  state.runtime.setCameraTuning({ lookahead: 26, lerp: 0.18 });
+  state.runtime.setCameraTuning({ lookahead: 0, lerp: 1 });
   state.runtime.setOverlay({
     showCollisionOverlay: false,
     showSpawnMarker: false,
@@ -144,6 +499,7 @@ function applyEditorMode() {
 
 function setPreviewMode(enabled) {
   state.previewMode = Boolean(enabled);
+  closeVoidModal();
   state.pointer.isPainting = false;
   state.pointer.isPanning = false;
   state.pointer.lastEditedIndex = -1;
@@ -163,26 +519,36 @@ function setPreviewMode(enabled) {
 
 function replaceMap(nextMap, fileName, statusMessage) {
   state.map = nextMap;
+  if (!Number.isInteger(state.map.voidTileId) || state.map.voidTileId === EMPTY_LAYER_TILE_ID) {
+    state.map.voidTileId = EDITOR_DEFAULT_VOID_TILE_ID;
+  }
+  ensureMapLayers();
   state.mapFileName = fileName || "mapa-rpg.json";
   state.dirty = false;
   state.runtime.setMap(state.map, { sanitize: true, resetPlayer: true });
+  state.map = state.runtime.map;
+  ensureMapLayers();
   if (state.previewMode) {
     applyGamePreviewMode();
   } else {
     applyEditorMode();
   }
+  updateVoidPickerPreview();
+  drawVoidModalPalette();
+  syncMapSizeInputs();
   setStatus(statusMessage, "ok");
 }
 
 function createNewMap() {
-  const freshMap = createEmptyMap(40, 26);
+  const requested = getRequestedMapSize(40, 26);
+  const freshMap = createEditorDefaultMap(requested.width, requested.height);
   replaceMap(freshMap, "novo-mapa.json", "Novo mapa criado.");
 }
 
 async function loadMapFromFile(file) {
   const text = await file.text();
   const parsed = JSON.parse(text);
-  const map = normalizeMap(parsed, { defaultCollision: 0 });
+  const map = normalizeMap(parsed, { defaultTile: VOID_STANDARD_TILE_ID, defaultCollision: 0 });
   if (!map) {
     throw new Error("Mapa invalido.");
   }
@@ -221,6 +587,23 @@ function refreshFileFilterOptions() {
   }
 }
 
+function formatTileLabel(tileId) {
+  if (tileId === VOID_STANDARD_TILE_ID) {
+    return "Tile #0 | Transparente (padrao)";
+  }
+  if (tileId === VOID_COPY_TILE_ID) {
+    return "Tile #-1 | Void padrao (inicial)";
+  }
+  if (tileId === EMPTY_LAYER_TILE_ID) {
+    return "Tile #-2 | Transparente";
+  }
+  const meta = state.assets.getTileMeta(tileId);
+  if (meta) {
+    return `Tile #${tileId} | ${fileNameFromAssetPath(meta.src)}`;
+  }
+  return `Tile #${tileId}`;
+}
+
 function refreshFilteredTiles() {
   const assetTileIds = state.assets.getTileIds({
     region: dom.regionFilter.value,
@@ -228,13 +611,16 @@ function refreshFilteredTiles() {
   });
 
   state.filteredTileIds = [];
-  state.filteredTileIds.push(VOID_TILE_ID);
+  state.filteredTileIds.push(VOID_STANDARD_TILE_ID);
+  state.filteredTileIds.push(VOID_COPY_TILE_ID);
   for (const tileId of assetTileIds) {
+    if (tileId === VOID_STANDARD_TILE_ID || tileId === VOID_COPY_TILE_ID || tileId === EMPTY_LAYER_TILE_ID) {
+      continue;
+    }
     if (!state.filteredTileIds.includes(tileId)) {
       state.filteredTileIds.push(tileId);
     }
   }
-  state.filteredTileIds.push(INDOOR_VOID_TILE_ID);
 
   if (state.filteredTileIds.length === 0) {
     state.selectedTileId = null;
@@ -251,19 +637,7 @@ function updateSelectedTileLabel() {
     dom.selectedTileLabel.textContent = "Tile selecionado: nenhum";
     return;
   }
-
-  if (state.selectedTileId === INDOOR_VOID_TILE_ID) {
-    dom.selectedTileLabel.textContent = `Tile #${INDOOR_VOID_TILE_ID} | Indoor Void (Preto)`;
-    return;
-  }
-
-  const meta = state.assets.getTileMeta(state.selectedTileId);
-  if (!meta) {
-    dom.selectedTileLabel.textContent = "Tile selecionado: invalido";
-    return;
-  }
-
-  dom.selectedTileLabel.textContent = `Tile #${state.selectedTileId} | ${fileNameFromAssetPath(meta.src)}`;
+  dom.selectedTileLabel.textContent = formatTileLabel(state.selectedTileId);
 }
 
 function drawTilePalette() {
@@ -282,14 +656,16 @@ function drawTilePalette() {
 
     paletteCtx.fillStyle = "#1a1a1a";
     paletteCtx.fillRect(x + 1, y + 1, PALETTE_CELL_SIZE - 2, PALETTE_CELL_SIZE - 2);
-    if (tileId === INDOOR_VOID_TILE_ID) {
-      paletteCtx.fillStyle = "#000000";
-      paletteCtx.fillRect(x + 4, y + 4, TILE_SIZE, TILE_SIZE);
-      paletteCtx.strokeStyle = "#585858";
-      paletteCtx.lineWidth = 1;
-      paletteCtx.strokeRect(x + 4.5, y + 4.5, TILE_SIZE - 1, TILE_SIZE - 1);
-    } else {
-      state.assets.drawTile(paletteCtx, tileId, x + 4, y + 4, TILE_SIZE);
+    drawTileChip(paletteCtx, tileId, TILE_SIZE, x + 4, y + 4);
+
+    if (tileId === VOID_STANDARD_TILE_ID || tileId === VOID_COPY_TILE_ID) {
+      paletteCtx.save();
+      paletteCtx.fillStyle = "rgba(0,0,0,0.5)";
+      paletteCtx.fillRect(x + 4, y + 24, TILE_SIZE, 12);
+      paletteCtx.fillStyle = "#f5f5f5";
+      paletteCtx.font = "bold 10px monospace";
+      paletteCtx.fillText(tileId === VOID_STANDARD_TILE_ID ? "#0" : "#-1", x + 7, y + 33);
+      paletteCtx.restore();
     }
 
     if (tileId === state.selectedTileId) {
@@ -304,8 +680,8 @@ function drawTilePalette() {
   }
 }
 
-function tileIdFromPaletteEvent(event) {
-  const pixel = getCanvasPixelPosition(event, dom.tilePaletteCanvas);
+function tileIdFromGridEvent(event, canvas, tileIds) {
+  const pixel = getCanvasPixelPosition(event, canvas);
   if (!pixel) {
     return null;
   }
@@ -317,8 +693,16 @@ function tileIdFromPaletteEvent(event) {
   }
 
   const index = row * PALETTE_COLUMNS + col;
-  const tileId = state.filteredTileIds[index];
+  const tileId = tileIds[index];
   return typeof tileId === "number" ? tileId : null;
+}
+
+function tileIdFromPaletteEvent(event) {
+  return tileIdFromGridEvent(event, dom.tilePaletteCanvas, state.filteredTileIds);
+}
+
+function tileIdFromVoidModalEvent(event) {
+  return tileIdFromGridEvent(event, dom.voidModalCanvas, state.voidModal.tileIds);
 }
 
 function cycleSelectedTile(delta) {
@@ -365,17 +749,30 @@ function applyPaintFromEvent(event) {
     state.map.spawn.x = tile.x;
     state.map.spawn.y = tile.y;
     changed = prevX !== tile.x || prevY !== tile.y;
-  } else if (event.shiftKey) {
-    const nextCollision = state.pointer.paintButton === 2 ? 0 : 1;
-    changed = state.map.collision[index] !== nextCollision;
-    state.map.collision[index] = nextCollision;
-  } else if (state.pointer.paintButton === 2) {
-    changed = state.map.tiles[index] !== VOID_TILE_ID || state.map.collision[index] !== 0;
-    state.map.tiles[index] = VOID_TILE_ID;
-    state.map.collision[index] = 0;
-  } else if (state.selectedTileId !== null) {
-    changed = state.map.tiles[index] !== state.selectedTileId;
-    state.map.tiles[index] = state.selectedTileId;
+  } else {
+    const activeLayerTiles = getActiveLayerTiles();
+    let tool = state.activeTool;
+    if (event.shiftKey) {
+      tool = "collision";
+    }
+
+    if (tool === "collision") {
+      const nextCollision = state.pointer.paintButton === 2 ? 0 : 1;
+      changed = state.map.collision[index] !== nextCollision;
+      state.map.collision[index] = nextCollision;
+    } else if (tool === "void") {
+      const configuredVoidTileId = getCurrentVoidTileId();
+      changed = activeLayerTiles[index] !== configuredVoidTileId || state.map.collision[index] !== 0;
+      activeLayerTiles[index] = configuredVoidTileId;
+      state.map.collision[index] = 0;
+    } else if (state.selectedTileId !== null) {
+      let paintTileId = state.selectedTileId;
+      if (state.pointer.paintButton === 2 && state.activeLayer !== LAYER_BOTTOM) {
+        paintTileId = EMPTY_LAYER_TILE_ID;
+      }
+      changed = activeLayerTiles[index] !== paintTileId;
+      activeLayerTiles[index] = paintTileId;
+    }
   }
 
   if (changed) {
@@ -392,15 +789,17 @@ function drawCanvasHud() {
   const ctx = state.runtime.ctx;
   ctx.save();
   ctx.fillStyle = "rgba(0,0,0,0.66)";
-  ctx.fillRect(10, 10, 430, 62);
+  ctx.fillRect(10, 10, 460, 78);
   ctx.fillStyle = "#efefef";
   ctx.font = "bold 13px monospace";
   ctx.fillText(state.previewMode ? "MODO PREVIEW" : "MODO EDICAO", 20, 31);
   if (state.previewMode) {
     ctx.fillText(getPreviewPositionText(), 20, 52);
+    ctx.fillText(`Layer ativa: ${state.activeLayer}`, 20, 70);
   } else {
     const suffix = state.dirty ? " (nao salvo)" : "";
     ctx.fillText(`Arquivo: ${state.mapFileName}${suffix}`, 20, 52);
+    ctx.fillText(`Layer ativa: ${state.activeLayer}`, 20, 70);
   }
   ctx.restore();
 }
@@ -463,6 +862,87 @@ function bindUi() {
 
   dom.previewBtn.addEventListener("click", () => {
     setPreviewMode(!state.previewMode);
+  });
+
+  dom.applyMapSizeBtn?.addEventListener("click", () => {
+    applyMapResizeFromUi();
+  });
+  dom.mapWidthInput?.addEventListener("change", () => {
+    applyMapResizeFromUi();
+  });
+  dom.mapHeightInput?.addEventListener("change", () => {
+    applyMapResizeFromUi();
+  });
+  [dom.mapWidthInput, dom.mapHeightInput].forEach((input) => {
+    input?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        applyMapResizeFromUi();
+      }
+    });
+  });
+
+  dom.toolPaintBtn?.addEventListener("click", () => {
+    setActiveTool("paint");
+  });
+  dom.toolCollisionBtn?.addEventListener("click", () => {
+    setActiveTool("collision");
+  });
+  dom.toolVoidBtn?.addEventListener("click", () => {
+    setActiveTool("void");
+  });
+  dom.layerTopBtn?.addEventListener("click", () => {
+    setActiveLayer(LAYER_TOP);
+  });
+  dom.layerMiddleBtn?.addEventListener("click", () => {
+    setActiveLayer(LAYER_MIDDLE);
+  });
+  dom.layerBottomBtn?.addEventListener("click", () => {
+    setActiveLayer(LAYER_BOTTOM);
+  });
+
+  dom.voidPickerBtn?.addEventListener("click", () => {
+    openVoidModal();
+  });
+  dom.voidModalCloseBtn?.addEventListener("click", () => {
+    closeVoidModal();
+  });
+  dom.voidModal?.addEventListener("mousedown", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (target === dom.voidModal || target.dataset.close === "void-modal") {
+      closeVoidModal();
+    }
+  });
+  dom.voidModalCanvas?.addEventListener("mousemove", (event) => {
+    const tileId = tileIdFromVoidModalEvent(event);
+    state.voidModal.hoveredTileId = typeof tileId === "number" ? tileId : null;
+    drawVoidModalPalette();
+  });
+  dom.voidModalCanvas?.addEventListener("mouseleave", () => {
+    state.voidModal.hoveredTileId = null;
+    drawVoidModalPalette();
+  });
+  dom.voidModalCanvas?.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+    const tileId = tileIdFromVoidModalEvent(event);
+    if (typeof tileId !== "number") {
+      return;
+    }
+    const previous = getCurrentVoidTileId();
+    if (tileId !== previous) {
+      state.map.voidTileId = tileId;
+      state.dirty = true;
+      updateVoidPickerPreview();
+      drawTilePalette();
+      updateSelectedTileLabel();
+      setStatus(`Tile void definido para #${tileId}.`, "ok");
+    }
+    closeVoidModal();
   });
 
   dom.toggleSelectorBtn.addEventListener("click", () => {
@@ -556,6 +1036,12 @@ function bindUi() {
   window.addEventListener("keydown", (event) => {
     const key = String(event.key || "").toLowerCase();
 
+    if (key === "escape" && state.voidModal.open) {
+      closeVoidModal();
+      event.preventDefault();
+      return;
+    }
+
     if (key === "m") {
       toggleSelectorPanel();
       event.preventDefault();
@@ -569,6 +1055,36 @@ function bindUi() {
     }
 
     if (!state.previewMode && !isFormElement(event.target)) {
+      if (key === "1") {
+        setActiveTool("paint");
+        event.preventDefault();
+        return;
+      }
+      if (key === "2") {
+        setActiveTool("collision");
+        event.preventDefault();
+        return;
+      }
+      if (key === "3") {
+        setActiveTool("void");
+        event.preventDefault();
+        return;
+      }
+      if (key === "7") {
+        setActiveLayer(LAYER_TOP);
+        event.preventDefault();
+        return;
+      }
+      if (key === "8") {
+        setActiveLayer(LAYER_MIDDLE);
+        event.preventDefault();
+        return;
+      }
+      if (key === "9") {
+        setActiveLayer(LAYER_BOTTOM);
+        event.preventDefault();
+        return;
+      }
       if (key === "q") {
         cycleSelectedTile(-1);
         event.preventDefault();
@@ -621,9 +1137,16 @@ async function init() {
       assets: state.assets
     });
     state.runtime.setMap(state.map, { sanitize: true, resetPlayer: true });
+    state.map = state.runtime.map;
+    ensureMapLayers();
+    syncMapSizeInputs();
     applyEditorMode();
 
     refreshFileFilterOptions();
+    refreshVoidModalTileIds();
+    setActiveTool(state.activeTool);
+    setActiveLayer(state.activeLayer);
+    updateVoidPickerPreview();
     refreshFilteredTiles();
     if (state.selectedTileId === null && state.filteredTileIds.length > 0) {
       state.selectedTileId = state.filteredTileIds[0];
