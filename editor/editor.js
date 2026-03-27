@@ -1,7 +1,9 @@
 import { AssetStore, TILE_SIZE, fileNameFromAssetPath } from "../shared/assets.js";
 import { WorldRuntime } from "../shared/runtime.js";
 import {
+  DOOR_EVENT_TILE_ID,
   EMPTY_LAYER_TILE_ID,
+  INTERACT_EVENT_TILE_ID,
   LAYER_BOTTOM,
   LAYER_MIDDLE,
   LAYER_TOP,
@@ -11,6 +13,8 @@ import {
   createMap,
   getMapLayer,
   normalizeMap,
+  sanitizeInteractAction,
+  sanitizeRoomName,
   serializeMap,
   toIndex
 } from "../shared/map-format.js";
@@ -18,6 +22,8 @@ import {
 const PALETTE_CELL_SIZE = 40;
 const PALETTE_COLUMNS = 8;
 const EDITOR_DEFAULT_VOID_TILE_ID = VOID_COPY_TILE_ID;
+const DEFAULT_ROOM_NAME = "sala";
+const SPECIAL_TILE_TYPES = ["door", "interact"];
 const MIN_MAP_SIZE = 8;
 const MAX_MAP_SIZE = 300;
 
@@ -36,6 +42,8 @@ const dom = {
   newFileBtn: document.getElementById("newFileBtn"),
   loadFileBtn: document.getElementById("loadFileBtn"),
   saveFileBtn: document.getElementById("saveFileBtn"),
+  roomNameInput: document.getElementById("roomNameInput"),
+  doorTargetInput: document.getElementById("doorTargetInput"),
   previewBtn: document.getElementById("previewBtn"),
   fileInput: document.getElementById("fileInput"),
   statusLine: document.getElementById("statusLine"),
@@ -43,6 +51,17 @@ const dom = {
   toolPaintBtn: document.getElementById("toolPaintBtn"),
   toolCollisionBtn: document.getElementById("toolCollisionBtn"),
   toolVoidBtn: document.getElementById("toolVoidBtn"),
+  toolSpecialBtn: document.getElementById("toolSpecialBtn"),
+
+  specialToolPanel: document.getElementById("specialToolPanel"),
+  specialTileTypeSelect: document.getElementById("specialTileTypeSelect"),
+  specialDoorTargetField: document.getElementById("specialDoorTargetField"),
+  specialDoorTargetInput: document.getElementById("specialDoorTargetInput"),
+  specialInteractActionField: document.getElementById("specialInteractActionField"),
+  specialInteractActionSelect: document.getElementById("specialInteractActionSelect"),
+  specialEraseToggleBtn: document.getElementById("specialEraseToggleBtn"),
+  specialToolHint: document.getElementById("specialToolHint"),
+
   layerTopBtn: document.getElementById("layerTopBtn"),
   layerMiddleBtn: document.getElementById("layerMiddleBtn"),
   layerBottomBtn: document.getElementById("layerBottomBtn"),
@@ -72,10 +91,12 @@ const paletteCtx = dom.tilePaletteCanvas.getContext("2d");
 const voidPreviewCtx = dom.voidPreviewCanvas ? dom.voidPreviewCanvas.getContext("2d") : null;
 const voidModalCtx = dom.voidModalCanvas ? dom.voidModalCanvas.getContext("2d") : null;
 
-function createEditorDefaultMap(width = 40, height = 26) {
+function createEditorDefaultMap(width = 40, height = 26, options = {}) {
+  const roomName = sanitizeRoomName(options.roomName, DEFAULT_ROOM_NAME);
   return createMap(width, height, {
     defaultTile: VOID_COPY_TILE_ID,
     voidTileId: EDITOR_DEFAULT_VOID_TILE_ID,
+    roomName,
     defaultCollision: 0
   });
 }
@@ -83,7 +104,9 @@ function createEditorDefaultMap(width = 40, height = 26) {
 const state = {
   assets: new AssetStore(),
   runtime: null,
-  map: createEditorDefaultMap(40, 26),
+  map: createEditorDefaultMap(40, 26, {
+    roomName: sanitizeRoomName(dom.roomNameInput?.value, DEFAULT_ROOM_NAME)
+  }),
   mapFileName: "novo-mapa.json",
   dirty: false,
 
@@ -91,6 +114,12 @@ const state = {
   selectorOpen: true,
   activeTool: "paint",
   activeLayer: LAYER_BOTTOM,
+  specialTool: {
+    type: "door",
+    doorTarget: sanitizeRoomName(dom.doorTargetInput?.value, DEFAULT_ROOM_NAME),
+    interactAction: null,
+    eraseMode: false
+  },
 
   selectedTileId: null,
   filteredTileIds: [],
@@ -110,6 +139,7 @@ const state = {
     panLastX: 0,
     panLastY: 0
   },
+  interactRequested: false,
   lastFrameTime: 0
 };
 
@@ -142,6 +172,125 @@ function syncMapSizeInputs() {
   }
 }
 
+function getRoomNameInputValue() {
+  return sanitizeRoomName(dom.roomNameInput?.value, DEFAULT_ROOM_NAME);
+}
+
+function syncRoomNameInput() {
+  if (!dom.roomNameInput || !state.map) {
+    return;
+  }
+  dom.roomNameInput.value = sanitizeRoomName(state.map.roomName, DEFAULT_ROOM_NAME);
+}
+
+function getDoorTargetInputValue() {
+  const raw = String(dom.doorTargetInput?.value ?? "").trim();
+  if (!raw) {
+    return "";
+  }
+  return sanitizeRoomName(raw, raw);
+}
+
+function getSpecialDoorTargetInputValue() {
+  const raw = String(dom.specialDoorTargetInput?.value ?? "").trim();
+  if (!raw) {
+    return "";
+  }
+  return sanitizeRoomName(raw, raw);
+}
+
+function normalizeSpecialTileType(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  return SPECIAL_TILE_TYPES.includes(raw) ? raw : "door";
+}
+
+function getSpecialInteractActionInputValue() {
+  return sanitizeInteractAction(dom.specialInteractActionSelect?.value);
+}
+
+function syncSpecialControlValues() {
+  const type = normalizeSpecialTileType(state.specialTool.type);
+  state.specialTool.type = type;
+
+  const doorTarget = sanitizeRoomName(state.specialTool.doorTarget, DEFAULT_ROOM_NAME);
+  state.specialTool.doorTarget = doorTarget;
+  if (dom.specialDoorTargetInput) {
+    dom.specialDoorTargetInput.value = doorTarget;
+  }
+
+  if (dom.specialTileTypeSelect) {
+    dom.specialTileTypeSelect.value = type;
+  }
+
+  const interactAction = sanitizeInteractAction(state.specialTool.interactAction);
+  state.specialTool.interactAction = interactAction;
+  if (dom.specialInteractActionSelect) {
+    dom.specialInteractActionSelect.value = interactAction || "";
+  }
+
+  if (dom.specialDoorTargetField) {
+    dom.specialDoorTargetField.style.display = type === "door" ? "" : "none";
+  }
+  if (dom.specialInteractActionField) {
+    dom.specialInteractActionField.style.display = type === "interact" ? "" : "none";
+  }
+
+  const eraseOn = state.specialTool.eraseMode === true;
+  if (dom.specialEraseToggleBtn) {
+    dom.specialEraseToggleBtn.textContent = `Remover: ${eraseOn ? "ON" : "OFF"}`;
+    dom.specialEraseToggleBtn.classList.toggle("is-active", eraseOn);
+  }
+
+  const isActive = state.activeTool === "special";
+  if (dom.specialToolPanel) {
+    dom.specialToolPanel.classList.toggle("is-disabled", !isActive);
+  }
+  if (dom.specialToolHint) {
+    dom.specialToolHint.textContent = eraseOn
+      ? "Clique para remover tiles especiais. Clique direito também remove."
+      : "Clique para colocar/editar o special selecionado. Clique direito remove.";
+  }
+}
+
+function ensureMapEventData() {
+  if (!state.map || typeof state.map !== "object") {
+    return;
+  }
+  const total = state.map.width * state.map.height;
+  state.map.roomName = sanitizeRoomName(state.map.roomName, DEFAULT_ROOM_NAME);
+
+  const interact = new Array(total).fill(0);
+  const rawInteract = Array.isArray(state.map.interact) ? state.map.interact : [];
+  for (let i = 0; i < total; i += 1) {
+    interact[i] = rawInteract[i] ? 1 : 0;
+  }
+  state.map.interact = interact;
+
+  const interactActions = new Array(total).fill(null);
+  const rawInteractActions = Array.isArray(state.map.interactActions) ? state.map.interactActions : [];
+  for (let i = 0; i < total; i += 1) {
+    if (interact[i] !== 1) {
+      interactActions[i] = null;
+      continue;
+    }
+    interactActions[i] = sanitizeInteractAction(rawInteractActions[i]);
+  }
+  state.map.interactActions = interactActions;
+
+  const doors = new Array(total).fill(null);
+  const rawDoors = Array.isArray(state.map.doors) ? state.map.doors : [];
+  for (let i = 0; i < total; i += 1) {
+    const rawTarget = rawDoors[i];
+    if (typeof rawTarget !== "string") {
+      doors[i] = null;
+      continue;
+    }
+    const target = rawTarget.trim();
+    doors[i] = target ? sanitizeRoomName(target, target) : null;
+  }
+  state.map.doors = doors;
+}
+
 function resizeCurrentMap(nextWidth, nextHeight) {
   const width = clampInt(nextWidth, MIN_MAP_SIZE, MAX_MAP_SIZE, state.map.width);
   const height = clampInt(nextHeight, MIN_MAP_SIZE, MAX_MAP_SIZE, state.map.height);
@@ -151,11 +300,13 @@ function resizeCurrentMap(nextWidth, nextHeight) {
   }
 
   ensureMapLayers();
+  ensureMapEventData();
   const sourceMap = state.map;
   const configuredVoidTileId = getCurrentVoidTileId();
   const resizedMap = createMap(width, height, {
     defaultTile: configuredVoidTileId,
     voidTileId: configuredVoidTileId,
+    roomName: sourceMap.roomName,
     defaultCollision: 0
   });
 
@@ -169,6 +320,9 @@ function resizeCurrentMap(nextWidth, nextHeight) {
       resizedMap.layers.middle[targetIndex] = sourceMap.layers.middle[sourceIndex];
       resizedMap.layers.top[targetIndex] = sourceMap.layers.top[sourceIndex];
       resizedMap.collision[targetIndex] = sourceMap.collision[sourceIndex] ? 1 : 0;
+      resizedMap.interact[targetIndex] = sourceMap.interact[sourceIndex] ? 1 : 0;
+      resizedMap.interactActions[targetIndex] = sourceMap.interactActions[sourceIndex] || null;
+      resizedMap.doors[targetIndex] = sourceMap.doors[sourceIndex] || null;
     }
   }
 
@@ -180,6 +334,7 @@ function resizeCurrentMap(nextWidth, nextHeight) {
   state.runtime.setMap(state.map, { sanitize: true, resetPlayer: true });
   state.map = state.runtime.map;
   ensureMapLayers();
+  ensureMapEventData();
   if (state.previewMode) {
     applyGamePreviewMode();
   } else {
@@ -197,9 +352,13 @@ function applyMapResizeFromUi() {
   const fallbackHeight = state.map?.height || 26;
   const requested = getRequestedMapSize(fallbackWidth, fallbackHeight);
   if (!state.runtime) {
-    state.map = createEditorDefaultMap(requested.width, requested.height);
+    state.map = createEditorDefaultMap(requested.width, requested.height, {
+      roomName: getRoomNameInputValue()
+    });
     ensureMapLayers();
+    ensureMapEventData();
     syncMapSizeInputs();
+    syncRoomNameInput();
     return;
   }
   resizeCurrentMap(requested.width, requested.height);
@@ -224,6 +383,12 @@ function getInputState() {
     up: state.keys.has("up"),
     down: state.keys.has("down")
   };
+}
+
+function consumeInteractRequest() {
+  const requested = state.interactRequested;
+  state.interactRequested = false;
+  return requested;
 }
 
 function getCurrentVoidTileId() {
@@ -259,15 +424,16 @@ function getResolvedVoidTileId(configuredVoidTileId = getCurrentVoidTileId()) {
 }
 
 function setActiveTool(toolName) {
-  if (!["paint", "collision", "void"].includes(toolName)) {
+  if (!["paint", "collision", "void", "special"].includes(toolName)) {
     return;
   }
   state.activeTool = toolName;
   renderActiveToolButtons();
+  syncSpecialControlValues();
 }
 
 function renderActiveToolButtons() {
-  const buttons = [dom.toolPaintBtn, dom.toolCollisionBtn, dom.toolVoidBtn];
+  const buttons = [dom.toolPaintBtn, dom.toolCollisionBtn, dom.toolVoidBtn, dom.toolSpecialBtn];
   buttons.forEach((button) => {
     if (!button) {
       return;
@@ -328,7 +494,12 @@ function getActiveLayerTiles() {
 }
 
 function resolveTileForPreview(tileId) {
-  if (tileId === EMPTY_LAYER_TILE_ID || tileId === VOID_STANDARD_TILE_ID) {
+  if (
+    tileId === EMPTY_LAYER_TILE_ID
+    || tileId === VOID_STANDARD_TILE_ID
+    || tileId === INTERACT_EVENT_TILE_ID
+    || tileId === DOOR_EVENT_TILE_ID
+  ) {
     return null;
   }
   if (tileId === VOID_COPY_TILE_ID) {
@@ -345,14 +516,43 @@ function drawTileChip(ctx, tileId, size = TILE_SIZE, dx = 0, dy = 0) {
   ctx.clearRect(dx, dy, size, size);
 
   const drawTileId = resolveTileForPreview(tileId);
-  if (drawTileId === null) {
-    return;
+  if (drawTileId !== null) {
+    state.assets.drawTile(ctx, drawTileId, dx, dy, size);
   }
-  state.assets.drawTile(ctx, drawTileId, dx, dy, size);
 
   if (tileId === VOID_STANDARD_TILE_ID || tileId === VOID_COPY_TILE_ID) {
     ctx.save();
     ctx.strokeStyle = tileId === VOID_STANDARD_TILE_ID ? "#67d9ff" : "#ffd670";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(dx + 0.5, dy + 0.5, size - 1, size - 1);
+    ctx.restore();
+  }
+
+  if (tileId === INTERACT_EVENT_TILE_ID) {
+    ctx.save();
+    ctx.fillStyle = "rgba(255, 193, 7, 0.35)";
+    ctx.fillRect(dx + 2, dy + 2, size - 4, size - 4);
+    ctx.fillStyle = "#fff0c2";
+    ctx.font = "bold 13px monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("I", dx + size / 2, dy + size / 2);
+    ctx.strokeStyle = "#ffe082";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(dx + 0.5, dy + 0.5, size - 1, size - 1);
+    ctx.restore();
+  }
+
+  if (tileId === DOOR_EVENT_TILE_ID) {
+    ctx.save();
+    ctx.fillStyle = "rgba(66, 165, 245, 0.35)";
+    ctx.fillRect(dx + 2, dy + 2, size - 4, size - 4);
+    ctx.fillStyle = "#d7ebff";
+    ctx.font = "bold 13px monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("D", dx + size / 2, dy + size / 2);
+    ctx.strokeStyle = "#90caf9";
     ctx.lineWidth = 1;
     ctx.strokeRect(dx + 0.5, dy + 0.5, size - 1, size - 1);
     ctx.restore();
@@ -482,7 +682,8 @@ function applyGamePreviewMode() {
   state.runtime.setOverlay({
     showCollisionOverlay: false,
     showSpawnMarker: false,
-    showGrid: false
+    showGrid: false,
+    showEventMarkers: true
   });
 }
 
@@ -493,7 +694,8 @@ function applyEditorMode() {
   state.runtime.setOverlay({
     showCollisionOverlay: true,
     showSpawnMarker: true,
-    showGrid: true
+    showGrid: true,
+    showEventMarkers: true
   });
 }
 
@@ -503,6 +705,7 @@ function setPreviewMode(enabled) {
   state.pointer.isPainting = false;
   state.pointer.isPanning = false;
   state.pointer.lastEditedIndex = -1;
+  state.interactRequested = false;
   state.keys.clear();
 
   if (state.previewMode) {
@@ -523,11 +726,13 @@ function replaceMap(nextMap, fileName, statusMessage) {
     state.map.voidTileId = EDITOR_DEFAULT_VOID_TILE_ID;
   }
   ensureMapLayers();
+  ensureMapEventData();
   state.mapFileName = fileName || "mapa-rpg.json";
   state.dirty = false;
   state.runtime.setMap(state.map, { sanitize: true, resetPlayer: true });
   state.map = state.runtime.map;
   ensureMapLayers();
+  ensureMapEventData();
   if (state.previewMode) {
     applyGamePreviewMode();
   } else {
@@ -536,19 +741,27 @@ function replaceMap(nextMap, fileName, statusMessage) {
   updateVoidPickerPreview();
   drawVoidModalPalette();
   syncMapSizeInputs();
+  syncRoomNameInput();
+  syncSpecialControlValues();
   setStatus(statusMessage, "ok");
 }
 
 function createNewMap() {
   const requested = getRequestedMapSize(40, 26);
-  const freshMap = createEditorDefaultMap(requested.width, requested.height);
+  const freshMap = createEditorDefaultMap(requested.width, requested.height, {
+    roomName: getRoomNameInputValue()
+  });
   replaceMap(freshMap, "novo-mapa.json", "Novo mapa criado.");
 }
 
 async function loadMapFromFile(file) {
   const text = await file.text();
   const parsed = JSON.parse(text);
-  const map = normalizeMap(parsed, { defaultTile: VOID_STANDARD_TILE_ID, defaultCollision: 0 });
+  const map = normalizeMap(parsed, {
+    roomName: getRoomNameInputValue(),
+    defaultTile: VOID_STANDARD_TILE_ID,
+    defaultCollision: 0
+  });
   if (!map) {
     throw new Error("Mapa invalido.");
   }
@@ -556,6 +769,7 @@ async function loadMapFromFile(file) {
 }
 
 function saveMapToFile() {
+  state.map.roomName = getRoomNameInputValue();
   const fileName = state.mapFileName || "mapa-rpg.json";
   downloadMapFile(fileName, state.map);
   state.dirty = false;
@@ -588,6 +802,12 @@ function refreshFileFilterOptions() {
 }
 
 function formatTileLabel(tileId) {
+  if (tileId === INTERACT_EVENT_TILE_ID) {
+    return "Tile INTERACT | Ativa com E na frente do player";
+  }
+  if (tileId === DOOR_EVENT_TILE_ID) {
+    return "Tile DOOR | Teleporta ao pisar (usa Destino Porta)";
+  }
   if (tileId === VOID_STANDARD_TILE_ID) {
     return "Tile #0 | Transparente (padrao)";
   }
@@ -726,6 +946,51 @@ function toggleSelectorPanel() {
   dom.selectorPanel.classList.toggle("is-hidden", !state.selectorOpen);
 }
 
+function removeSpecialAtIndex(index) {
+  ensureMapEventData();
+  const hadInteract = state.map.interact[index] === 1;
+  const hadAction = state.map.interactActions[index] !== null;
+  const hadDoor = state.map.doors[index] !== null;
+  if (!hadInteract && !hadAction && !hadDoor) {
+    return false;
+  }
+  state.map.interact[index] = 0;
+  state.map.interactActions[index] = null;
+  state.map.doors[index] = null;
+  return true;
+}
+
+function applySpecialToolAtIndex(index, paintButton = 0) {
+  if (paintButton === 2 || state.specialTool.eraseMode) {
+    return removeSpecialAtIndex(index);
+  }
+
+  const type = normalizeSpecialTileType(state.specialTool.type);
+  if (type === "door") {
+    const targetRoom = sanitizeRoomName(state.specialTool.doorTarget, "");
+    if (!targetRoom) {
+      setStatus("Defina o destino da porta no painel de Special Tiles.", "error");
+      return false;
+    }
+    const changed = state.map.doors[index] !== targetRoom
+      || state.map.interact[index] !== 0
+      || state.map.interactActions[index] !== null;
+    state.map.doors[index] = targetRoom;
+    state.map.interact[index] = 0;
+    state.map.interactActions[index] = null;
+    return changed;
+  }
+
+  const action = sanitizeInteractAction(state.specialTool.interactAction);
+  const changed = state.map.interact[index] !== 1
+    || state.map.interactActions[index] !== action
+    || state.map.doors[index] !== null;
+  state.map.interact[index] = 1;
+  state.map.interactActions[index] = action;
+  state.map.doors[index] = null;
+  return changed;
+}
+
 function applyPaintFromEvent(event) {
   const pixel = getCanvasPixelPosition(event, dom.editorCanvas);
   if (!pixel) {
@@ -750,6 +1015,7 @@ function applyPaintFromEvent(event) {
     state.map.spawn.y = tile.y;
     changed = prevX !== tile.x || prevY !== tile.y;
   } else {
+    ensureMapEventData();
     const activeLayerTiles = getActiveLayerTiles();
     let tool = state.activeTool;
     if (event.shiftKey) {
@@ -760,18 +1026,35 @@ function applyPaintFromEvent(event) {
       const nextCollision = state.pointer.paintButton === 2 ? 0 : 1;
       changed = state.map.collision[index] !== nextCollision;
       state.map.collision[index] = nextCollision;
+    } else if (tool === "special") {
+      changed = applySpecialToolAtIndex(index, state.pointer.paintButton);
     } else if (tool === "void") {
       const configuredVoidTileId = getCurrentVoidTileId();
       changed = activeLayerTiles[index] !== configuredVoidTileId || state.map.collision[index] !== 0;
       activeLayerTiles[index] = configuredVoidTileId;
       state.map.collision[index] = 0;
     } else if (state.selectedTileId !== null) {
-      let paintTileId = state.selectedTileId;
-      if (state.pointer.paintButton === 2 && state.activeLayer !== LAYER_BOTTOM) {
-        paintTileId = EMPTY_LAYER_TILE_ID;
+      if (state.selectedTileId === INTERACT_EVENT_TILE_ID || state.selectedTileId === DOOR_EVENT_TILE_ID) {
+        if (state.selectedTileId === INTERACT_EVENT_TILE_ID) {
+          state.specialTool.type = "interact";
+        } else {
+          state.specialTool.type = "door";
+          const fallbackTarget = getDoorTargetInputValue();
+          if (fallbackTarget) {
+            state.specialTool.doorTarget = fallbackTarget;
+          }
+        }
+        syncSpecialControlValues();
+        setActiveTool("special");
+        changed = applySpecialToolAtIndex(index, state.pointer.paintButton);
+      } else {
+        let paintTileId = state.selectedTileId;
+        if (state.pointer.paintButton === 2 && state.activeLayer !== LAYER_BOTTOM) {
+          paintTileId = EMPTY_LAYER_TILE_ID;
+        }
+        changed = activeLayerTiles[index] !== paintTileId;
+        activeLayerTiles[index] = paintTileId;
       }
-      changed = activeLayerTiles[index] !== paintTileId;
-      activeLayerTiles[index] = paintTileId;
     }
   }
 
@@ -787,19 +1070,22 @@ function getPreviewPositionText() {
 
 function drawCanvasHud() {
   const ctx = state.runtime.ctx;
+  const roomName = sanitizeRoomName(state.map.roomName, DEFAULT_ROOM_NAME);
   ctx.save();
   ctx.fillStyle = "rgba(0,0,0,0.66)";
-  ctx.fillRect(10, 10, 460, 78);
+  ctx.fillRect(10, 10, 560, 96);
   ctx.fillStyle = "#efefef";
   ctx.font = "bold 13px monospace";
   ctx.fillText(state.previewMode ? "MODO PREVIEW" : "MODO EDICAO", 20, 31);
   if (state.previewMode) {
     ctx.fillText(getPreviewPositionText(), 20, 52);
-    ctx.fillText(`Layer ativa: ${state.activeLayer}`, 20, 70);
+    ctx.fillText(`Sala: ${roomName}`, 20, 70);
+    ctx.fillText(`Layer ativa: ${state.activeLayer}`, 20, 88);
   } else {
     const suffix = state.dirty ? " (nao salvo)" : "";
     ctx.fillText(`Arquivo: ${state.mapFileName}${suffix}`, 20, 52);
-    ctx.fillText(`Layer ativa: ${state.activeLayer}`, 20, 70);
+    ctx.fillText(`Sala: ${roomName}`, 20, 70);
+    ctx.fillText(`Layer ativa: ${state.activeLayer}`, 20, 88);
   }
   ctx.restore();
 }
@@ -810,6 +1096,7 @@ function render() {
     showCollisionOverlay: !state.previewMode,
     showSpawnMarker: !state.previewMode,
     showGrid: !state.previewMode,
+    showEventMarkers: true,
     showPlayer: true,
     showPlayerShadow: state.previewMode,
     playerAlpha: state.previewMode ? 1 : 0.72
@@ -825,8 +1112,9 @@ function tick(timestamp) {
   state.lastFrameTime = timestamp;
 
   if (state.previewMode) {
-    state.runtime.update(getInputState(), dt);
+    state.runtime.update(getInputState(), dt, { interact: consumeInteractRequest() });
   } else {
+    consumeInteractRequest();
     state.runtime.update({ left: false, right: false, up: false, down: false }, dt);
   }
   render();
@@ -860,6 +1148,28 @@ function bindUi() {
     saveMapToFile();
   });
 
+  dom.roomNameInput?.addEventListener("change", () => {
+    if (!state.map) {
+      return;
+    }
+    const next = getRoomNameInputValue();
+    dom.roomNameInput.value = next;
+    if (state.map.roomName !== next) {
+      state.map.roomName = next;
+      state.dirty = true;
+      setStatus(`Nome da sala atualizado para "${next}".`, "ok");
+    }
+  });
+
+  dom.doorTargetInput?.addEventListener("change", () => {
+    const normalized = getDoorTargetInputValue();
+    dom.doorTargetInput.value = normalized || "";
+    if (normalized) {
+      state.specialTool.doorTarget = normalized;
+      syncSpecialControlValues();
+    }
+  });
+
   dom.previewBtn.addEventListener("click", () => {
     setPreviewMode(!state.previewMode);
   });
@@ -890,6 +1200,34 @@ function bindUi() {
   });
   dom.toolVoidBtn?.addEventListener("click", () => {
     setActiveTool("void");
+  });
+  dom.toolSpecialBtn?.addEventListener("click", () => {
+    setActiveTool("special");
+  });
+
+  dom.specialTileTypeSelect?.addEventListener("change", () => {
+    state.specialTool.type = normalizeSpecialTileType(dom.specialTileTypeSelect.value);
+    syncSpecialControlValues();
+  });
+  dom.specialDoorTargetInput?.addEventListener("change", () => {
+    const normalized = getSpecialDoorTargetInputValue();
+    if (!normalized) {
+      dom.specialDoorTargetInput.value = state.specialTool.doorTarget;
+      return;
+    }
+    state.specialTool.doorTarget = normalized;
+    if (dom.doorTargetInput) {
+      dom.doorTargetInput.value = normalized;
+    }
+    syncSpecialControlValues();
+  });
+  dom.specialInteractActionSelect?.addEventListener("change", () => {
+    state.specialTool.interactAction = getSpecialInteractActionInputValue();
+    syncSpecialControlValues();
+  });
+  dom.specialEraseToggleBtn?.addEventListener("click", () => {
+    state.specialTool.eraseMode = !state.specialTool.eraseMode;
+    syncSpecialControlValues();
   });
   dom.layerTopBtn?.addEventListener("click", () => {
     setActiveLayer(LAYER_TOP);
@@ -1054,6 +1392,12 @@ function bindUi() {
       return;
     }
 
+    if (state.previewMode && !isFormElement(event.target) && key === "e") {
+      state.interactRequested = true;
+      event.preventDefault();
+      return;
+    }
+
     if (!state.previewMode && !isFormElement(event.target)) {
       if (key === "1") {
         setActiveTool("paint");
@@ -1067,6 +1411,11 @@ function bindUi() {
       }
       if (key === "3") {
         setActiveTool("void");
+        event.preventDefault();
+        return;
+      }
+      if (key === "4") {
+        setActiveTool("special");
         event.preventDefault();
         return;
       }
@@ -1121,6 +1470,7 @@ function bindUi() {
 
   window.addEventListener("blur", () => {
     state.keys.clear();
+    state.interactRequested = false;
     state.pointer.isPainting = false;
     state.pointer.isPanning = false;
   });
@@ -1136,10 +1486,25 @@ async function init() {
       canvas: dom.editorCanvas,
       assets: state.assets
     });
+    state.runtime.setEventHandlers({
+      onInteract: ({ tileX, tileY, action }) => {
+        if (state.previewMode) {
+          const actionText = action || "sem ação";
+          setStatus(`INTERACT em x=${tileX}, y=${tileY} | ação: ${actionText} (TBA).`, "ok");
+        }
+      },
+      onDoorEnter: ({ targetRoom, tileX, tileY }) => {
+        if (state.previewMode) {
+          setStatus(`DOOR em x=${tileX}, y=${tileY} -> "${targetRoom}". Transicao real no jogo.`, "ok");
+        }
+      }
+    });
     state.runtime.setMap(state.map, { sanitize: true, resetPlayer: true });
     state.map = state.runtime.map;
     ensureMapLayers();
+    ensureMapEventData();
     syncMapSizeInputs();
+    syncRoomNameInput();
     applyEditorMode();
 
     refreshFileFilterOptions();

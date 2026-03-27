@@ -1,5 +1,5 @@
 import { AssetStore } from "../shared/assets.js";
-import { createEmptyMap, normalizeMap, VOID_TILE_ID } from "../shared/map-format.js";
+import { cloneMap, createEmptyMap, normalizeMap, sanitizeRoomName, VOID_TILE_ID } from "../shared/map-format.js";
 import { WorldRuntime } from "../shared/runtime.js";
 
 const DIRECTION_KEYS = {
@@ -25,8 +25,11 @@ const state = {
   assets: new AssetStore(),
   runtime: null,
   keys: new Set(),
+  roomsByName: new Map(),
+  currentRoomName: "",
   hasMapFile: false,
   mapName: "(nenhum)",
+  interactRequested: false,
   lastFrameTime: 0
 };
 
@@ -56,25 +59,82 @@ function getInputState() {
   };
 }
 
+function consumeInteractRequest() {
+  const requested = state.interactRequested;
+  state.interactRequested = false;
+  return requested;
+}
+
+function getBaseFileName(fileName) {
+  const text = String(fileName || "");
+  const dot = text.lastIndexOf(".");
+  if (dot <= 0) {
+    return text || "sala";
+  }
+  return text.slice(0, dot);
+}
+
 function setVoidMapState() {
   const voidMap = createEmptyMap(40, 26);
-  state.runtime.setMap(voidMap, { sanitize: false, resetPlayer: true });
+  state.runtime.setMap(voidMap, { sanitize: true, resetPlayer: true });
+  state.roomsByName.clear();
+  state.currentRoomName = "";
   state.hasMapFile = false;
   state.mapName = "(nenhum)";
   setStatus(`Sem mapa carregado: vazio em Tile #${VOID_TILE_ID} (Outside E.png).`, "info");
 }
 
-async function loadMapFromFile(file) {
-  const text = await file.text();
-  const parsed = JSON.parse(text);
-  const map = normalizeMap(parsed, { defaultCollision: 0 });
-  if (!map) {
-    throw new Error("JSON de mapa invalido.");
+function activateRoom(roomName, statusMessage = "") {
+  const safeRoomName = String(roomName || "").trim();
+  if (!safeRoomName) {
+    return false;
   }
-  state.runtime.setMap(map, { sanitize: true, resetPlayer: true });
+  const entry = state.roomsByName.get(safeRoomName);
+  if (!entry) {
+    return false;
+  }
+
+  state.runtime.setMap(cloneMap(entry.map), { sanitize: true, resetPlayer: true });
   state.hasMapFile = true;
-  state.mapName = file.name;
-  setStatus(`Mapa carregado: ${file.name} (${map.width}x${map.height}).`, "ok");
+  state.currentRoomName = entry.roomName;
+  state.mapName = `${entry.roomName} (${entry.fileName})`;
+  if (statusMessage) {
+    setStatus(statusMessage, "ok");
+  }
+  return true;
+}
+
+async function loadMapsFromFiles(fileList) {
+  const files = Array.isArray(fileList) ? fileList : [];
+  if (files.length === 0) {
+    return;
+  }
+
+  const parsedRooms = [];
+  for (const file of files) {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    const fallbackRoom = sanitizeRoomName(getBaseFileName(file.name), "sala");
+    const map = normalizeMap(parsed, { roomName: fallbackRoom, defaultCollision: 0 });
+    if (!map) {
+      throw new Error(`JSON de mapa invalido em ${file.name}.`);
+    }
+    map.roomName = sanitizeRoomName(map.roomName, fallbackRoom);
+    parsedRooms.push({
+      roomName: map.roomName,
+      fileName: file.name,
+      map
+    });
+  }
+
+  state.roomsByName.clear();
+  parsedRooms.forEach((entry) => {
+    state.roomsByName.set(entry.roomName, entry);
+  });
+
+  const firstRoom = parsedRooms[0];
+  activateRoom(firstRoom.roomName);
+  setStatus(`Mapas carregados: ${parsedRooms.length}. Sala atual: "${firstRoom.roomName}".`, "ok");
 }
 
 function drawHud() {
@@ -83,7 +143,7 @@ function drawHud() {
 
   ctx.save();
   ctx.fillStyle = "rgba(0,0,0,0.65)";
-  ctx.fillRect(10, 10, 500, 84);
+  ctx.fillRect(10, 10, 620, 106);
   ctx.fillStyle = "#f0f0f0";
   ctx.font = "bold 13px monospace";
   ctx.fillText(`Mapa: ${state.mapName}`, 20, 31);
@@ -91,7 +151,11 @@ function drawHud() {
 
   if (!state.hasMapFile) {
     ctx.fillStyle = "#d6f0ff";
-    ctx.fillText(`Sem arquivo: void padrao em Tile #${VOID_TILE_ID}.`, 20, 72);
+    ctx.fillText(`Sem arquivo: void padrao em Tile #${VOID_TILE_ID}.`, 20, 73);
+  } else {
+    ctx.fillStyle = "#d6f0ff";
+    ctx.fillText(`Sala atual: ${state.currentRoomName} | E = INTERACT`, 20, 73);
+    ctx.fillText("DOOR ativa ao pisar no tile configurado.", 20, 94);
   }
   ctx.restore();
 }
@@ -102,6 +166,7 @@ function render() {
     showCollisionOverlay: false,
     showSpawnMarker: false,
     showGrid: false,
+    showEventMarkers: false,
     showPlayer: true,
     showPlayerShadow: true,
     playerAlpha: 1
@@ -116,7 +181,7 @@ function tick(timestamp) {
   const dt = Math.min((timestamp - state.lastFrameTime) / 1000, 0.05);
   state.lastFrameTime = timestamp;
 
-  state.runtime.update(getInputState(), dt);
+  state.runtime.update(getInputState(), dt, { interact: consumeInteractRequest() });
   render();
   requestAnimationFrame(tick);
 }
@@ -127,15 +192,15 @@ function bindUi() {
   });
 
   dom.mapFileInput.addEventListener("change", async () => {
-    const file = dom.mapFileInput.files?.[0];
-    if (!file) {
+    const files = Array.from(dom.mapFileInput.files || []);
+    if (files.length === 0) {
       return;
     }
 
     try {
-      await loadMapFromFile(file);
+      await loadMapsFromFiles(files);
     } catch (_error) {
-      setStatus("Falha ao carregar arquivo de mapa.", "error");
+      setStatus("Falha ao carregar arquivo(s) de mapa.", "error");
     } finally {
       dom.mapFileInput.value = "";
     }
@@ -149,6 +214,14 @@ function bindUi() {
     if (isFormElement(event.target)) {
       return;
     }
+
+    const key = String(event.key || "").toLowerCase();
+    if (key === "e") {
+      state.interactRequested = true;
+      event.preventDefault();
+      return;
+    }
+
     const direction = directionFromEvent(event);
     if (!direction) {
       return;
@@ -168,6 +241,7 @@ function bindUi() {
 
   window.addEventListener("blur", () => {
     state.keys.clear();
+    state.interactRequested = false;
   });
 }
 
@@ -181,13 +255,27 @@ async function init() {
       canvas: dom.gameCanvas,
       assets: state.assets
     });
+    state.runtime.setEventHandlers({
+      onInteract: ({ roomName, tileX, tileY, action }) => {
+        const actionText = action || "sem ação";
+        setStatus(`INTERACT em "${roomName}" x=${tileX}, y=${tileY} | ação: ${actionText}. TBA.`, "ok");
+      },
+      onDoorEnter: ({ roomName, tileX, tileY, targetRoom }) => {
+        if (activateRoom(targetRoom)) {
+          setStatus(`DOOR: "${roomName}" (${tileX},${tileY}) -> "${targetRoom}".`, "ok");
+          return;
+        }
+        setStatus(`DOOR para "${targetRoom}" nao encontrada. Carregue esta sala no jogo.`, "error");
+      }
+    });
     state.runtime.setZoom(1.75);
     state.runtime.setMovementEnabled(true);
     state.runtime.setFollowPlayer(true, true);
     state.runtime.setOverlay({
       showCollisionOverlay: false,
       showSpawnMarker: false,
-      showGrid: false
+      showGrid: false,
+      showEventMarkers: false
     });
     state.runtime.setCameraTuning({ lookahead: 0, lerp: 1 });
     setVoidMapState();

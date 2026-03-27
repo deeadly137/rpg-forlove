@@ -4,6 +4,8 @@ import {
   VOID_COPY_TILE_ID,
   VOID_STANDARD_TILE_ID,
   createEmptyMap,
+  sanitizeInteractAction,
+  sanitizeRoomName,
   toIndex,
   VOID_TILE_ID
 } from "./map-format.js";
@@ -21,6 +23,7 @@ export class WorldRuntime {
     this.map = createEmptyMap(40, 26);
     this.camera = { x: 0, y: 0 };
     this.player = { x: 0, y: 0, speed: 132, vx: 0, vy: 0 };
+    this.playerFacing = { x: 0, y: 1 };
 
     this.zoom = 1;
     this.followPlayer = true;
@@ -31,6 +34,11 @@ export class WorldRuntime {
     this.showCollisionOverlay = false;
     this.showSpawnMarker = false;
     this.showGrid = false;
+    this.showEventMarkers = false;
+
+    this.onInteract = null;
+    this.onDoorEnter = null;
+    this.doorStepLock = false;
 
     this.resetPlayerToSpawn();
   }
@@ -55,7 +63,13 @@ export class WorldRuntime {
     if (options.resetPlayer !== false) {
       this.resetPlayerToSpawn();
     }
+    this.doorStepLock = true;
     this.clampCamera();
+  }
+
+  setEventHandlers(config = {}) {
+    this.onInteract = typeof config.onInteract === "function" ? config.onInteract : null;
+    this.onDoorEnter = typeof config.onDoorEnter === "function" ? config.onDoorEnter : null;
   }
 
   getFallbackVoidTileId() {
@@ -150,6 +164,7 @@ export class WorldRuntime {
   sanitizeMapTiles() {
     const total = this.map.width * this.map.height;
     this.map.voidTileId = this.sanitizeConfiguredVoidTileId(this.map.voidTileId);
+    this.map.roomName = sanitizeRoomName(this.map.roomName, "sala");
 
     const layers = this.getLayerArrays();
     this.map.layers = layers;
@@ -166,6 +181,37 @@ export class WorldRuntime {
     if (!this.map.spawn || typeof this.map.spawn !== "object") {
       this.map.spawn = { x: 1, y: 1 };
     }
+
+    const interact = new Array(total).fill(0);
+    const rawInteract = Array.isArray(this.map.interact) ? this.map.interact : [];
+    for (let i = 0; i < total; i += 1) {
+      interact[i] = rawInteract[i] ? 1 : 0;
+    }
+    this.map.interact = interact;
+
+    const interactActions = new Array(total).fill(null);
+    const rawInteractActions = Array.isArray(this.map.interactActions) ? this.map.interactActions : [];
+    for (let i = 0; i < total; i += 1) {
+      if (interact[i] !== 1) {
+        interactActions[i] = null;
+        continue;
+      }
+      interactActions[i] = sanitizeInteractAction(rawInteractActions[i]);
+    }
+    this.map.interactActions = interactActions;
+
+    const doors = new Array(total).fill(null);
+    const rawDoors = Array.isArray(this.map.doors) ? this.map.doors : [];
+    for (let i = 0; i < total; i += 1) {
+      const rawTarget = rawDoors[i];
+      if (typeof rawTarget !== "string") {
+        doors[i] = null;
+        continue;
+      }
+      const target = rawTarget.trim();
+      doors[i] = target ? sanitizeRoomName(target, target) : null;
+    }
+    this.map.doors = doors;
   }
 
   setZoom(zoom) {
@@ -199,6 +245,9 @@ export class WorldRuntime {
     }
     if (typeof config.showGrid === "boolean") {
       this.showGrid = config.showGrid;
+    }
+    if (typeof config.showEventMarkers === "boolean") {
+      this.showEventMarkers = config.showEventMarkers;
     }
   }
 
@@ -240,6 +289,8 @@ export class WorldRuntime {
     this.player.y = (spawn.y + 1) * TILE_SIZE;
     this.player.vx = 0;
     this.player.vy = 0;
+    this.playerFacing.x = 0;
+    this.playerFacing.y = 1;
     this.updateCamera(true);
   }
 
@@ -313,7 +364,7 @@ export class WorldRuntime {
     return false;
   }
 
-  update(input, dt) {
+  update(input, dt, actions = {}) {
     if (this.movementEnabled) {
       let moveX = 0;
       let moveY = 0;
@@ -343,6 +394,13 @@ export class WorldRuntime {
 
         this.player.vx = moveX;
         this.player.vy = moveY;
+        if (moveX !== 0) {
+          this.playerFacing.x = Math.sign(moveX);
+          this.playerFacing.y = 0;
+        } else if (moveY !== 0) {
+          this.playerFacing.x = 0;
+          this.playerFacing.y = Math.sign(moveY);
+        }
 
         const distance = this.player.speed * dt;
         const nextX = this.player.x + moveX * distance;
@@ -363,6 +421,10 @@ export class WorldRuntime {
       this.player.vy = 0;
     }
 
+    if (actions.interact === true) {
+      this.triggerInteract();
+    }
+    this.handleDoorTrigger();
     this.updateCamera(false);
   }
 
@@ -394,6 +456,70 @@ export class WorldRuntime {
       x: Math.floor(this.player.x / TILE_SIZE),
       y: Math.floor((this.player.y - 1) / TILE_SIZE)
     };
+  }
+
+  getFacingTilePosition() {
+    const current = this.getPlayerTilePosition();
+    const targetX = current.x + this.playerFacing.x;
+    const targetY = current.y + this.playerFacing.y;
+    if (targetX < 0 || targetY < 0 || targetX >= this.map.width || targetY >= this.map.height) {
+      return null;
+    }
+    return { x: targetX, y: targetY };
+  }
+
+  triggerInteract() {
+    const facingTile = this.getFacingTilePosition();
+    if (!facingTile) {
+      return false;
+    }
+    const index = toIndex(facingTile.x, facingTile.y, this.map.width);
+    if (this.map.interact[index] !== 1) {
+      return false;
+    }
+    const action = sanitizeInteractAction(this.map.interactActions?.[index]);
+    if (typeof this.onInteract === "function") {
+      this.onInteract({
+        roomName: this.map.roomName,
+        tileX: facingTile.x,
+        tileY: facingTile.y,
+        action
+      });
+    }
+    return true;
+  }
+
+  getDoorTargetAtPlayerTile() {
+    const tile = this.getPlayerTilePosition();
+    if (tile.x < 0 || tile.y < 0 || tile.x >= this.map.width || tile.y >= this.map.height) {
+      return null;
+    }
+    const index = toIndex(tile.x, tile.y, this.map.width);
+    const target = this.map.doors[index];
+    if (typeof target !== "string" || !target.trim()) {
+      return null;
+    }
+    return {
+      roomName: this.map.roomName,
+      tileX: tile.x,
+      tileY: tile.y,
+      targetRoom: target
+    };
+  }
+
+  handleDoorTrigger() {
+    const doorInfo = this.getDoorTargetAtPlayerTile();
+    if (!doorInfo) {
+      this.doorStepLock = false;
+      return;
+    }
+    if (this.doorStepLock) {
+      return;
+    }
+    if (typeof this.onDoorEnter === "function") {
+      this.onDoorEnter(doorInfo);
+    }
+    this.doorStepLock = true;
   }
 
   drawGridLines(viewportWidth, viewportHeight, cameraX = this.camera.x, cameraY = this.camera.y) {
@@ -439,6 +565,38 @@ export class WorldRuntime {
     }
   }
 
+  drawEventMarkers(fromX, toX, fromY, toY, snapX, snapY) {
+    const interact = this.map.interact || [];
+    const doors = this.map.doors || [];
+    this.ctx.save();
+    this.ctx.font = "bold 10px monospace";
+    this.ctx.textAlign = "center";
+    this.ctx.textBaseline = "middle";
+
+    for (let y = fromY; y <= toY; y += 1) {
+      for (let x = fromX; x <= toX; x += 1) {
+        const index = toIndex(x, y, this.map.width);
+        const screenX = Math.floor(x * TILE_SIZE - snapX);
+        const screenY = Math.floor(y * TILE_SIZE - snapY);
+
+        if (interact[index] === 1) {
+          this.ctx.fillStyle = "rgba(255, 193, 7, 0.35)";
+          this.ctx.fillRect(screenX + 2, screenY + 2, TILE_SIZE - 4, TILE_SIZE - 4);
+          this.ctx.fillStyle = "#fff0c2";
+          this.ctx.fillText("I", screenX + TILE_SIZE / 2, screenY + TILE_SIZE / 2);
+        }
+
+        if (typeof doors[index] === "string" && doors[index]) {
+          this.ctx.fillStyle = "rgba(66, 165, 245, 0.35)";
+          this.ctx.fillRect(screenX + 4, screenY + 4, TILE_SIZE - 8, TILE_SIZE - 8);
+          this.ctx.fillStyle = "#d7ebff";
+          this.ctx.fillText("D", screenX + TILE_SIZE / 2, screenY + TILE_SIZE / 2);
+        }
+      }
+    }
+    this.ctx.restore();
+  }
+
   render(options = {}) {
     const backgroundColor = options.backgroundColor || "#0f1810";
     const showPlayer = options.showPlayer !== false;
@@ -451,6 +609,9 @@ export class WorldRuntime {
       ? options.showSpawnMarker
       : this.showSpawnMarker;
     const showGrid = typeof options.showGrid === "boolean" ? options.showGrid : this.showGrid;
+    const showEventMarkers = typeof options.showEventMarkers === "boolean"
+      ? options.showEventMarkers
+      : this.showEventMarkers;
 
     const viewport = this.getViewportSize();
     const viewportWidth = viewport.width;
@@ -510,6 +671,10 @@ export class WorldRuntime {
     }
 
     this.drawLayerRange(topLayer, fromX, toX, fromY, toY, snapX, snapY); // bottom -> middle -> personagem -> top
+
+    if (showEventMarkers) {
+      this.drawEventMarkers(fromX, toX, fromY, toY, snapX, snapY);
+    }
 
     if (showCollisionOverlay) {
       this.ctx.fillStyle = "rgba(198, 40, 40, 0.3)";

@@ -13,6 +13,14 @@
     <button id="newFileBtn" type="button">Novo arquivo</button>
     <button id="loadFileBtn" type="button">Carregar arquivo</button>
     <button id="saveFileBtn" type="button">Salvar arquivo</button>
+    <label class="top-field">
+      Sala
+      <input id="roomNameInput" type="text" maxlength="64" value="sala">
+    </label>
+    <label class="top-field">
+      Destino Porta
+      <input id="doorTargetInput" type="text" maxlength="64" value="sala">
+    </label>
     <button id="previewBtn" type="button">Preview: OFF</button>
     <input id="fileInput" type="file" accept="application/json" hidden>
     <p id="statusLine" class="status" data-type="info">Inicializando editor...</p>
@@ -34,6 +42,33 @@
           <button id="toolVoidBtn" class="tool-btn" type="button" data-tool="void" title="Void (atalho: 3)">
             &#9632;
           </button>
+          <button id="toolSpecialBtn" class="tool-btn" type="button" data-tool="special" title="Special Tiles (atalho: 4)">
+            &#9881;
+          </button>
+        </div>
+        <div id="specialToolPanel" class="special-tool-panel">
+          <p class="void-label">Special Tiles</p>
+          <label class="field compact-field">
+            Tipo
+            <select id="specialTileTypeSelect">
+              <option value="door">DOOR</option>
+              <option value="interact">INTERACT</option>
+            </select>
+          </label>
+          <label id="specialDoorTargetField" class="field compact-field">
+            Destino da porta
+            <input id="specialDoorTargetInput" type="text" maxlength="64" value="sala">
+          </label>
+          <label id="specialInteractActionField" class="field compact-field">
+            Ação do INTERACT
+            <select id="specialInteractActionSelect">
+              <option value="">Sem ação (TBA)</option>
+              <option value="textbox_tba">Textbox (TBA)</option>
+              <option value="inventory_tba">Inventory (TBA)</option>
+            </select>
+          </label>
+          <button id="specialEraseToggleBtn" type="button">Remover: OFF</button>
+          <p id="specialToolHint" class="special-hint">Use esta ferramenta para colocar, editar ou remover tiles especiais.</p>
         </div>
         <div class="layer-box">
           <p class="void-label">Layer ativa</p>
