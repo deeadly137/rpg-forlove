@@ -331,9 +331,16 @@ export class WorldRuntime {
       }
 
       if (moveX !== 0 || moveY !== 0) {
-        const length = Math.hypot(moveX, moveY) || 1;
-        moveX /= length;
-        moveY /= length;
+        // Lock to 4-way movement: if both axes are pressed, keep only one axis.
+        if (moveX !== 0 && moveY !== 0) {
+          const preferHorizontal = Math.abs(this.player.vx) >= Math.abs(this.player.vy);
+          if (preferHorizontal) {
+            moveY = 0;
+          } else {
+            moveX = 0;
+          }
+        }
+
         this.player.vx = moveX;
         this.player.vy = moveY;
 
