@@ -468,8 +468,8 @@ export class WorldRuntime {
     const middleLayer = this.map.layers?.middle || [];
     const topLayer = this.map.layers?.top || [];
 
-    this.drawLayerRange(bottomLayer, fromX, toX, fromY, toY, snapX, snapY);
-    this.drawLayerRange(middleLayer, fromX, toX, fromY, toY, snapX, snapY);
+    this.drawLayerRange(bottomLayer, fromX, toX, fromY, toY, snapX, snapY); // bottom -> middle -> personagem -> top
+    this.drawLayerRange(middleLayer, fromX, toX, fromY, toY, snapX, snapY); // bottom -> middle -> personagem -> top
 
     if (showPlayer && showPlayerShadow) {
       this.ctx.save();
@@ -502,7 +502,7 @@ export class WorldRuntime {
       this.ctx.restore();
     }
 
-    this.drawLayerRange(topLayer, fromX, toX, fromY, toY, snapX, snapY);
+    this.drawLayerRange(topLayer, fromX, toX, fromY, toY, snapX, snapY); // bottom -> middle -> personagem -> top
 
     if (showCollisionOverlay) {
       this.ctx.fillStyle = "rgba(198, 40, 40, 0.3)";
